@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import { faEye, faEyeSlash } from '@fortawesome/free-solid-svg-icons'
 import { useAuth } from '../context/AuthContext'
 
 export default function LoginPage () {
@@ -10,6 +12,7 @@ export default function LoginPage () {
     password: 'admin123'
   })
   const [error, setError] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   useEffect(() => {
     if (!error) return undefined
     const timeout = setTimeout(() => setError(''), 5000)
@@ -72,14 +75,25 @@ export default function LoginPage () {
 
           <label>
             Password
-            <input
-              type='password'
-              name='password'
-              value={form.password}
-              onChange={handleChange}
-              placeholder='Enter password'
-              required
-            />
+            <div className='password-field'>
+              <input
+                type={showPassword ? 'text' : 'password'}
+                name='password'
+                value={form.password}
+                onChange={handleChange}
+                placeholder='Enter password'
+                required
+              />
+              <button
+                type='button'
+                className='password-toggle'
+                aria-label={showPassword ? 'Hide password' : 'Show password'}
+                aria-pressed={showPassword}
+                onClick={() => setShowPassword(value => !value)}
+              >
+                <FontAwesomeIcon icon={showPassword ? faEyeSlash : faEye} />
+              </button>
+            </div>
           </label>
 
           {error && <p className='form-error'>{error}</p>}

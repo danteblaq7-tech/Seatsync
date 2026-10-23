@@ -57,7 +57,12 @@ const authLimiter = rateLimit({
   message: { message: 'Too many auth attempts, please try again later.' }
 })
 
-app.use(cors({ origin: true, credentials: true }))
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL.split(',').map(url => url.trim()),
+    credentials: true
+  })
+)
 app.use(express.json())
 app.use(cookieParser())
 app.use('/api', apiLimiter)

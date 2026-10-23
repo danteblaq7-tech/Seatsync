@@ -25,6 +25,7 @@ import LecturerProfilePage from './pages/LecturerProfilePage'
 import { api } from './api/client'
 import './App.css'
 import ProfileCompletionModal from './components/ProfileCompletionModal'
+import { SOCKET_BASE_URL } from './config.js'
 
 function ProtectedLayout () {
   const queryClient = useQueryClient()
@@ -33,10 +34,7 @@ function ProtectedLayout () {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   useEffect(() => {
-    const socketUrl = (
-      import.meta.env.VITE_API_URL || 'http://localhost:3000'
-    ).replace(/\/$/, '')
-    const socket = io(socketUrl, { transports: ['websocket'] })
+    const socket = io(SOCKET_BASE_URL, { transports: ['websocket'] })
     const refreshScheduleData = payload => {
       console.info('[REALTIME] timetable:changed received', payload)
       queryClient.invalidateQueries({ queryKey: ['timetable'] })

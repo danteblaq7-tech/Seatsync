@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import ConfirmActionModal from '../components/ConfirmActionModal'
 import PaginationControls from '../components/PaginationControls'
 import SearchableSelect from '../components/SearchableSelect'
 import { useAuth } from '../context/AuthContext'
+import { semesterLabel } from '../utils/semesterLabel.js'
 
 const toArray = value => {
   if (Array.isArray(value)) return value
@@ -63,6 +64,7 @@ export default function CoursesPage () {
   const { user } = useAuth()
   const canManageUnits = (user?.roles || []).includes('ADMIN')
   const [showForm, setShowForm] = useState(false)
+  const builderRef = useRef(null)
   const [form, setForm] = useState(emptyUnit)
   const [formError, setFormError] = useState('')
   const [unitDepartmentSearch, setUnitDepartmentSearch] = useState('')
@@ -140,6 +142,11 @@ export default function CoursesPage () {
     queryFn: async () => toArray(await api.get('/api/academic/semesters'))
   })
 
+  const { data: academicYears = [] } = useQuery({
+    queryKey: ['unit-academic-years'],
+    queryFn: async () => toArray(await api.get('/api/academic/academic-years'))
+  })
+
   const departmentNameMap = Object.fromEntries(
     (departments || []).map(department => [
       String(department.id),
@@ -198,6 +205,12 @@ export default function CoursesPage () {
       setUnitDepartmentSearch('')
       setUnitProgrammeSearch('')
       setFormError('')
+      requestAnimationFrame(() => {
+        builderRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start'
+        })
+      })
     },
     onError: err => {
       setFormError(err.message || 'Unable to create course.')
@@ -295,8 +308,11 @@ export default function CoursesPage () {
       </div>
 
       {showForm && canManageUnits && (
-        <section className='content-panel'>
-          <form className='stack-form' onSubmit={handleSubmit}>
+        <section ref={builderRef} className='content-panel'>
+          <form
+            className='stack-form academic-mobile-single-column-form'
+            onSubmit={handleSubmit}
+          >
             <div className='form-grid'>
               <fieldset className='selection-container'>
                 <legend>Departments</legend>
@@ -427,7 +443,7 @@ export default function CoursesPage () {
                   </option>
                   {semesters.map(semester => (
                     <option key={semester.id} value={semester.id}>
-                      {semester.name}
+                      {semesterLabel(semester, academicYears)}
                     </option>
                   ))}
                 </select>
@@ -743,7 +759,7 @@ export default function CoursesPage () {
               </button>
             </div>
             <form
-              className='stack-form'
+              className='stack-form academic-mobile-single-column-form'
               onSubmit={event => {
                 event.preventDefault()
                 const selectedDepartments = new Set(
@@ -925,7 +941,7 @@ export default function CoursesPage () {
                     <option value=''>Select semester</option>
                     {semesters.map(item => (
                       <option key={item.id} value={item.id}>
-                        {item.name}
+                        {semesterLabel(item, academicYears)}
                       </option>
                     ))}
                   </select>

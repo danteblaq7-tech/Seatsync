@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { weekdayFromDateOnly } from '../utils/dateOnly'
+import { semesterLabel } from '../utils/semesterLabel.js'
 import { useAuth } from '../context/AuthContext'
 import ScrollableSelect from '../components/ScrollableSelect'
 import usePendingScheduleDrafts from '../hooks/usePendingScheduleDrafts'
@@ -1370,7 +1371,7 @@ export default function TimetablePage () {
                       key={semester.id ?? semester.name}
                       value={semester.id ?? semester.name}
                     >
-                      {semester.name}
+                      {semesterLabel(semester, academicYears)}
                     </option>
                   ))}
                 </select>
@@ -1692,7 +1693,7 @@ export default function TimetablePage () {
                 key={semester.id ?? semester.name}
                 value={semester.id ?? semester.name}
               >
-                {semester.name}
+                {semesterLabel(semester, academicYears)}
               </option>
             ))}
           </select>

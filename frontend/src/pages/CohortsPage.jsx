@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import ConfirmActionModal from '../components/ConfirmActionModal'
@@ -24,6 +24,7 @@ export default function CohortsPage () {
   const { user } = useAuth()
   const canManageCohorts = (user?.roles || []).includes('ADMIN')
   const [showForm, setShowForm] = useState(false)
+  const builderRef = useRef(null)
   const [form, setForm] = useState(emptyCohort)
   const [formError, setFormError] = useState('')
   const [search, setSearch] = useState('')
@@ -107,9 +108,14 @@ export default function CohortsPage () {
           queryClient.invalidateQueries({ queryKey: [queryKey] })
         )
       )
-      setShowForm(false)
       setForm(emptyCohort)
       setFormError('')
+      requestAnimationFrame(() => {
+        builderRef.current?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'start'
+        })
+      })
     },
     onError: err => setFormError(err.message || 'Unable to create cohort.')
   })
@@ -185,8 +191,11 @@ export default function CohortsPage () {
       </div>
 
       {showForm && canManageCohorts && (
-        <section className='content-panel'>
-          <form className='stack-form' onSubmit={handleSubmit}>
+        <section ref={builderRef} className='content-panel'>
+          <form
+            className='stack-form academic-mobile-single-column-form'
+            onSubmit={handleSubmit}
+          >
             <div className='form-grid'>
               <label>
                 Cohort name
@@ -492,7 +501,7 @@ export default function CohortsPage () {
               </button>
             </div>
             <form
-              className='stack-form'
+              className='stack-form academic-mobile-single-column-form'
               onSubmit={event => {
                 event.preventDefault()
                 if (

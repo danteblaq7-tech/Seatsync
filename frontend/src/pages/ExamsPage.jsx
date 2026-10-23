@@ -7,6 +7,7 @@ import PaginationControls from '../components/PaginationControls'
 import ConfirmActionModal from '../components/ConfirmActionModal'
 import { useAuth } from '../context/AuthContext'
 import usePendingScheduleDrafts from '../hooks/usePendingScheduleDrafts'
+import { semesterLabel } from '../utils/semesterLabel.js'
 
 const toArray = value => {
   if (Array.isArray(value)) return value
@@ -1016,7 +1017,7 @@ export default function ExamsPage () {
                       key={item.id ?? item.name}
                       value={item.id ?? item.name}
                     >
-                      {item.name}
+                      {semesterLabel(item, academicYears)}
                     </option>
                   ))}
                 </select>

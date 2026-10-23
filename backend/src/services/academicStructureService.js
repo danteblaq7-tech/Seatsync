@@ -295,8 +295,12 @@ export const validateAcademicDuplicate = async (
     predicates.push('id <> ?')
     params.push(Number(excludeId))
   }
+  const selectedColumns = ['id', 'name']
+  if (rule.fields.includes('code')) selectedColumns.push('code')
   const matches = await rawQuery(
-    `SELECT id, name, code FROM \`${rule.table}\` WHERE ${predicates.join(
+    `SELECT ${selectedColumns
+      .map(column => `\`${column}\``)
+      .join(', ')} FROM \`${rule.table}\` WHERE ${predicates.join(
       ' AND '
     )} LIMIT 1`,
     params

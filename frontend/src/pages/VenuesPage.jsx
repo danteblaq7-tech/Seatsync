@@ -5,6 +5,7 @@ import { api } from '../api/client'
 import { formatDateOnly } from '../utils/dateOnly'
 import ConfirmActionModal from '../components/ConfirmActionModal'
 import { useAuth } from '../context/AuthContext'
+import { SOCKET_BASE_URL } from '../config.js'
 
 const toArray = value => {
   if (Array.isArray(value)) return value
@@ -113,10 +114,7 @@ export default function VenuesPage () {
   const socketRef = useRef(null)
 
   useEffect(() => {
-    const socketUrl = (
-      import.meta.env.VITE_API_URL || 'http://localhost:3000'
-    ).replace(/\/$/, '')
-    const socket = io(socketUrl, { transports: ['websocket'] })
+    const socket = io(SOCKET_BASE_URL, { transports: ['websocket'] })
     socketRef.current = socket
 
     socket.on('venue:blocked', () => {

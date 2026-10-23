@@ -3,51 +3,187 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import PaginationControls from '../components/PaginationControls'
 
-const prettyAuditDetails = value => {
-  if (!value) return 'No data recorded.'
+const internalAuditFields = new Set([
+  'created_at',
+  'updated_at',
+  'deleted_at',
+  'user_id',
+  'ip_address',
+  'user_agent',
+  'password',
+  'password_hash',
+  'token',
+  'access_token',
+  'refresh_token'
+])
 
-  const normalize = raw => {
-    if (typeof raw === 'string') {
-      try {
-        return JSON.parse(raw)
-      } catch {
-        return raw
-      }
+const deletedRecordFields = new Set([
+  'name',
+  'code',
+  'unit_name',
+  'unit_code',
+  'cohort_name',
+  'email',
+  'exam_date',
+  'effective_date'
+])
+
+const fieldLabels = {
+  is_active: 'Status',
+  active: 'Status',
+  is_current: 'Academic year status',
+  student_count: 'Student count',
+  year_level: 'Year level',
+  duration_years: 'Programme duration',
+  allocated_capacity: 'Allocated capacity',
+  exam_date: 'Exam date',
+  effective_date: 'Class date',
+  start_time: 'Start time',
+  end_time: 'End time',
+  unit_name: 'Unit',
+  unit_code: 'Unit code',
+  cohort_name: 'Cohort',
+  venue_name: 'Venue'
+}
+
+const normalizeAuditKey = key =>
+  key.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase()
+
+const isInternalAuditField = key => {
+  const normalized = normalizeAuditKey(key)
+  return (
+    internalAuditFields.has(normalized) ||
+    normalized === 'id' ||
+    normalized.endsWith('_id') ||
+    normalized.endsWith('_ids')
+  )
+}
+
+const auditFieldLabel = key => {
+  const normalized = normalizeAuditKey(key)
+  return (
+    fieldLabels[normalized] ||
+    normalized
+      .split('_')
+      .filter(Boolean)
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ')
+  )
+}
+
+const parseAuditRecord = value => {
+  if (typeof value === 'string') {
+    try {
+      return parseAuditRecord(JSON.parse(value))
+    } catch {
+      return {}
     }
-    return raw
+  }
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value
+    : {}
+}
+
+const formatAuditValue = (value, key = '') => {
+  if (value === null || value === undefined || value === '') return 'Not set'
+  if (typeof value === 'boolean') {
+    if (['active', 'is_active'].includes(normalizeAuditKey(key))) {
+      return value ? 'Active' : 'Inactive'
+    }
+    return value ? 'Yes' : 'No'
+  }
+  if (typeof value === 'number' || typeof value === 'string') {
+    if (normalizeAuditKey(key) === 'status') {
+      return value
+        .toLowerCase()
+        .replaceAll('_', ' ')
+        .replace(/\b\w/g, character => character.toUpperCase())
+    }
+    return String(value)
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map(item => formatAuditValue(item))
+      .filter(Boolean)
+      .join(', ')
+  }
+  return Object.entries(value)
+    .filter(([entryKey]) => !isInternalAuditField(entryKey))
+    .map(
+      ([entryKey, entryValue]) =>
+        `${auditFieldLabel(entryKey)}: ${formatAuditValue(
+          entryValue,
+          entryKey
+        )}`
+    )
+    .join(', ')
+}
+
+const getAuditChanges = log => {
+  const action = String(log.action || '').toUpperCase()
+  const before = parseAuditRecord(log.old_values ?? log.oldValues)
+  const after = parseAuditRecord(log.new_values ?? log.newValues)
+
+  if (action === 'DELETE') {
+    return Object.entries(before)
+      .filter(([key]) => deletedRecordFields.has(normalizeAuditKey(key)))
+      .map(([key, value]) => ({
+        key: normalizeAuditKey(key),
+        label: auditFieldLabel(key),
+        value,
+        type: 'detail'
+      }))
   }
 
-  const formatValue = raw => {
-    const parsed = normalize(raw)
+  const beforeFields = new Map(
+    Object.entries(before).map(([key, value]) => [
+      normalizeAuditKey(key),
+      value
+    ])
+  )
+  const afterFields = new Map(
+    Object.entries(after).map(([key, value]) => [normalizeAuditKey(key), value])
+  )
+  const fieldKeys = new Set([...beforeFields.keys(), ...afterFields.keys()])
+  const hasBeforeAndAfter =
+    Object.keys(before).length > 0 && Object.keys(after).length > 0
 
-    if (parsed === null || parsed === undefined) return '—'
-    if (typeof parsed === 'boolean') return parsed ? 'Yes' : 'No'
-    if (typeof parsed === 'number' || typeof parsed === 'string')
-      return String(parsed)
-    if (Array.isArray(parsed)) {
-      return parsed
-        .map(item => {
-          if (typeof item === 'object' && item !== null) {
-            return Object.entries(item)
-              .map(([key, entryValue]) => `${key}: ${formatValue(entryValue)}`)
-              .join(', ')
-          }
-          return formatValue(item)
-        })
-        .join(' | ')
-    }
-    if (typeof parsed === 'object') {
-      return Object.entries(parsed)
-        .map(
-          ([key, entryValue]) =>
-            `${key.replaceAll('_', ' ')}: ${formatValue(entryValue)}`
-        )
-        .join(' • ')
-    }
-    return String(parsed)
+  return [...fieldKeys]
+    .filter(key => !isInternalAuditField(key))
+    .filter(key => {
+      if (!hasBeforeAndAfter) return true
+      return (
+        JSON.stringify(beforeFields.get(key)) !==
+        JSON.stringify(afterFields.get(key))
+      )
+    })
+    .map(key => ({
+      key,
+      label: auditFieldLabel(key),
+      before: beforeFields.get(key),
+      after: afterFields.get(key),
+      type: hasBeforeAndAfter ? 'change' : 'detail'
+    }))
+}
+
+const auditTimestampLabel = action => {
+  if (action === 'DELETE') return 'Deleted at'
+  if (action === 'ARCHIVE_COHORT') return 'Archived at'
+  if (action === 'CREATE_MAKEUP_CLASS') return 'Requested at'
+  if (action === 'UPDATE') return 'Updated at'
+  return 'Recorded at'
+}
+
+const auditActionLabel = action => {
+  const labels = {
+    DELETE: 'Record deleted',
+    UPDATE: 'Record updated',
+    ARCHIVE_COHORT: 'Cohort archived',
+    CREATE_MAKEUP_CLASS: 'Make-up class requested',
+    BLOCK_USER: 'User blocked',
+    UNBLOCK_USER: 'User unblocked'
   }
-
-  return formatValue(value)
+  return labels[action] || String(action || 'Audit record').replaceAll('_', ' ')
 }
 
 export default function ReportsPage () {
@@ -100,6 +236,8 @@ export default function ReportsPage () {
     setter(event.target.value)
     setPage(1)
   }
+  const viewingAction = String(viewingLog?.action || '').toUpperCase()
+  const auditChanges = viewingLog ? getAuditChanges(viewingLog) : []
 
   return (
     <div className='page-shell'>
@@ -272,7 +410,7 @@ export default function ReportsPage () {
               <div>
                 <p className='eyebrow'>Audit record · #{viewingLog.id}</p>
                 <h2 id='audit-detail-heading'>
-                  {String(viewingLog.action || '').replaceAll('_', ' ')}
+                  {auditActionLabel(viewingAction)}
                 </h2>
               </div>
               <button
@@ -302,7 +440,7 @@ export default function ReportsPage () {
                 </dd>
               </div>
               <div>
-                <dt>Timestamp</dt>
+                <dt>{auditTimestampLabel(viewingAction)}</dt>
                 <dd>
                   {viewingLog.created_at
                     ? new Date(viewingLog.created_at).toLocaleString()
@@ -314,15 +452,49 @@ export default function ReportsPage () {
                 <dd>{viewingLog.reason || 'No reason supplied'}</dd>
               </div>
             </dl>
+            <h3 className='audit-detail-section-heading'>
+              {viewingAction === 'DELETE'
+                ? 'Deleted record'
+                : viewingAction === 'UPDATE'
+                ? 'Changes made'
+                : 'Relevant details'}
+            </h3>
             <div className='audit-detail-changes'>
-              <section>
-                <h3>Before</h3>
-                <p>{prettyAuditDetails(viewingLog.old_values)}</p>
-              </section>
-              <section>
-                <h3>After</h3>
-                <p>{prettyAuditDetails(viewingLog.new_values)}</p>
-              </section>
+              {auditChanges.length ? (
+                auditChanges.map(change => (
+                  <section key={change.key}>
+                    <h3>{change.label}</h3>
+                    {change.type === 'change' ? (
+                      <>
+                        <p>
+                          <strong>Before:</strong>{' '}
+                          {formatAuditValue(change.before, change.key)}
+                        </p>
+                        <p>
+                          <strong>After:</strong>{' '}
+                          {formatAuditValue(change.after, change.key)}
+                        </p>
+                      </>
+                    ) : (
+                      <p>
+                        <strong>
+                          {viewingAction === 'DELETE' ? 'Was:' : 'Details:'}
+                        </strong>{' '}
+                        {formatAuditValue(
+                          change.type === 'detail' && change.value !== undefined
+                            ? change.value
+                            : change.after,
+                          change.key
+                        )}
+                      </p>
+                    )}
+                  </section>
+                ))
+              ) : (
+                <p className='audit-detail-empty'>
+                  No relevant record details were recorded.
+                </p>
+              )}
             </div>
           </section>
         </div>

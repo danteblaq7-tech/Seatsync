@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
+import { useAuth } from '../context/AuthContext'
 
 export default function ProfileCompletionModal ({ role }) {
   const queryClient = useQueryClient()
+  const { logout } = useAuth()
+  const [departmentSearch, setDepartmentSearch] = useState('')
+  const [programmeSearch, setProgrammeSearch] = useState('')
   const [form, setForm] = useState({
     facultyIds: [],
     departmentIds: [],
@@ -43,6 +47,18 @@ export default function ProfileCompletionModal ({ role }) {
       ),
     [programmes, form.departmentIds]
   )
+  const visibleDepartments = useMemo(() => {
+    const needle = departmentSearch.trim().toLowerCase()
+    return facultyDepartments.filter(item =>
+      `${item.name || ''} ${item.code || ''}`.toLowerCase().includes(needle)
+    )
+  }, [departmentSearch, facultyDepartments])
+  const visibleProgrammes = useMemo(() => {
+    const needle = programmeSearch.trim().toLowerCase()
+    return selectedProgrammes.filter(item =>
+      `${item.name || ''} ${item.code || ''}`.toLowerCase().includes(needle)
+    )
+  }, [programmeSearch, selectedProgrammes])
   const selectedUnits = useMemo(
     () =>
       units.filter(item =>
@@ -206,8 +222,16 @@ export default function ProfileCompletionModal ({ role }) {
               </fieldset>
               <fieldset className='selection-container'>
                 <legend>Departments</legend>
+                <input
+                  type='search'
+                  value={departmentSearch}
+                  onChange={event => setDepartmentSearch(event.target.value)}
+                  placeholder='Search departments by name or code'
+                  aria-label='Search departments by name or code'
+                  disabled={!form.facultyIds.length}
+                />
                 <div className='checkbox-list lecturer-profile-checkboxes'>
-                  {facultyDepartments.map(item => (
+                  {visibleDepartments.map(item => (
                     <label key={item.id} className='checkbox-option'>
                       <input
                         type='checkbox'
@@ -222,12 +246,23 @@ export default function ProfileCompletionModal ({ role }) {
                   {!form.facultyIds.length && (
                     <small>Select a faculty first.</small>
                   )}
+                  {form.facultyIds.length > 0 && !visibleDepartments.length && (
+                    <small>No departments match that search.</small>
+                  )}
                 </div>
               </fieldset>
               <fieldset className='selection-container'>
                 <legend>Programmes</legend>
+                <input
+                  type='search'
+                  value={programmeSearch}
+                  onChange={event => setProgrammeSearch(event.target.value)}
+                  placeholder='Search programmes by name or code'
+                  aria-label='Search programmes by name or code'
+                  disabled={!form.departmentIds.length}
+                />
                 <div className='checkbox-list lecturer-profile-checkboxes'>
-                  {selectedProgrammes.map(item => (
+                  {visibleProgrammes.map(item => (
                     <label key={item.id} className='checkbox-option'>
                       <input
                         type='checkbox'
@@ -242,6 +277,10 @@ export default function ProfileCompletionModal ({ role }) {
                   {!form.departmentIds.length && (
                     <small>Select a department first.</small>
                   )}
+                  {form.departmentIds.length > 0 &&
+                    !visibleProgrammes.length && (
+                      <small>No programmes match that search.</small>
+                    )}
                 </div>
               </fieldset>
               <fieldset className='selection-container'>
@@ -334,6 +373,15 @@ export default function ProfileCompletionModal ({ role }) {
             {mutation.isPending ? 'Saving...' : 'Save academic profile'}
           </button>
         </form>
+        <div className='profile-completion-logout'>
+          <button
+            type='button'
+            className='secondary-button'
+            onClick={() => void logout()}
+          >
+            Log out
+          </button>
+        </div>
       </section>
     </div>
   )

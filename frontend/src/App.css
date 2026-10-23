@@ -329,6 +329,24 @@ button {
   margin: 0 0 8px;
 }
 
+.audit-detail-section-heading {
+  margin: 0 0 10px;
+}
+
+.audit-detail-changes p {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.audit-detail-changes p strong {
+  color: var(--muted);
+}
+
+.audit-detail-empty {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}
+
 .audit-detail-changes pre {
   max-height: 42vh;
   overflow: auto;
@@ -542,6 +560,7 @@ button {
 }
 
 .academic-builder-form .form-grid {
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
 }
 
@@ -986,6 +1005,12 @@ button {
 .profile-completion-form .selection-container .checkbox-list {
   max-height: 116px;
   overflow-y: auto;
+}
+
+.profile-completion-logout {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 
 .toolbar-actions {
@@ -1435,6 +1460,38 @@ button {
   border-radius: 12px;
   padding: 12px 14px;
   background: #fff;
+}
+
+.password-field {
+  position: relative;
+  width: 100%;
+}
+
+.auth-form .password-field input {
+  padding-right: 48px;
+}
+
+.auth-form .password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+
+.auth-form .password-toggle:hover,
+.auth-form .password-toggle:focus-visible {
+  background: var(--surface);
+  color: var(--text);
 }
 
 .auth-form button {
@@ -1957,6 +2014,10 @@ button {
 }
 
 @media (max-width: 760px) {
+  .academic-mobile-single-column-form .form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .timetable-editor-section {
     padding: 14px;
   }
