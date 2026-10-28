@@ -1,0 +1,38 @@
+{
+  "name": "seatsync-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "migrate": "node src/database/migration.js",
+    "migrate:cohorts": "node src/database/cohortCompatibilityMigration.js",
+    "migrate:units": "node src/database/unitCompatibilityMigration.js",
+    "migrate:rename-units": "node src/database/renameCoursesToUnits.js",
+    "migrate:unit-programmes": "node src/database/unitProgrammeMigration.js",
+    "migrate:unit-departments": "node src/database/unitDepartmentMigration.js",
+    "migrate:timetable-assignments": "node src/database/timetableAssignmentMigration.js",
+    "migrate:registration-profiles": "node src/database/registrationProfilesMigration.js",
+    "migrate:lecturer-units": "node src/database/lecturerUnitsMigration.js",
+    "migrate:schedule-drafts": "node src/database/scheduleDraftsMigration.js",
+    "migrate:unit-id-columns": "node src/database/renameCourseIdToUnitIdMigration.js",
+    "migrate:exam-type": "node src/database/removeExamType.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "bcrypt": "^6.0.0",
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.3",
+    "express-rate-limit": "^7.5.1",
+    "jsonwebtoken": "^9.0.3",
+    "mysql2": "^3.24.6",
+    "socket.io": "^4.8.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

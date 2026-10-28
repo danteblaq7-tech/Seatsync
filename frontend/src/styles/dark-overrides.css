@@ -1,0 +1,35 @@
+/* ==========================================================================
+   Dark-mode fixes for older App.css rules that hard-code light colours.
+   Loaded last so it can win. Light mode is unaffected.
+   ========================================================================== */
+
+[data-theme='dark'] body {
+  background: var(--bg);
+}
+
+[data-theme='dark'] .profile-modal,
+[data-theme='dark'] .audit-detail-modal,
+[data-theme='dark'] .modal-card,
+[data-theme='dark'] .confirm-modal {
+  background: var(--surface);
+  color: var(--text);
+}
+
+[data-theme='dark'] .table-panel th {
+  color: var(--heading);
+}
+
+[data-theme='dark'] .table-panel tbody tr:hover {
+  background: var(--surface-muted);
+}
+
+[data-theme='dark'] input::placeholder,
+[data-theme='dark'] textarea::placeholder {
+  color: var(--muted);
+}
+
+[data-theme='dark'] .scrollable-select-menu,
+[data-theme='dark'] .scrollable-select-trigger {
+  background: var(--surface);
+  color: var(--text);
+}

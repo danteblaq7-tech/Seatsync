@@ -1,0 +1,142 @@
+/* ==========================================================================
+   SeatSync design tokens
+   Ported from the prototype (Seat-sync): navy + cream + gold brand palette,
+   per-role accent colours, light/dark themes.
+   Every other stylesheet should read these variables instead of hard-coding
+   colours.
+   ========================================================================== */
+
+:root {
+  /* ---- Brand palette (from prototype logo / login) ---- */
+  --navy: #05436c;
+  --navy-deep: #032e4d;
+  --navy-bright: #0b4d87;
+  --cream: #ffffd0;
+  --gold: #b99a45;
+  --tan: #bfaa85;
+  --gold-soft: #d6cd88;
+
+  /* ---- Typography ---- */
+  --brand-font: 'Orbitron', 'Exo 2', sans-serif;
+  --body-font: 'Gill Sans', 'Gill Sans MT', Calibri, 'Trebuchet MS', Inter,
+    system-ui, sans-serif;
+
+  /* ---- Role accent (overridden by [data-role]) ---- */
+  --accent: #0868b7;
+  --accent-bright: #4aa3e8; /* readable on the navy sidebar */
+  --accent-soft: rgba(8, 104, 183, 0.14);
+  --accent-glow: rgba(8, 104, 183, 0.35);
+
+  /* ---- Light theme surfaces ---- */
+  --bg: var(--cream);
+  --surface: #ffffff;
+  --surface-muted: #fbf8e3;
+  --border: #e3dcb4;
+  --text: #031e3b;
+  --muted: #5f6f7e;
+  --heading: var(--navy);
+
+  --button-bg: #f3efcf;
+  --button-hover: #e9e3b8;
+  --toggle-bg: #f3efcf;
+  --toggle-hover: #e9e3b8;
+
+  --primary-action-bg: var(--navy);
+  --primary-action-text: #ffffff;
+  --primary-action-hover: var(--navy-bright);
+
+  --shadow: 0 10px 30px rgba(5, 67, 108, 0.1);
+
+  /* ---- Sidebar (navy in both themes) ---- */
+  --sidebar-bg: var(--navy);
+  --sidebar-text: #e8f0f7;
+  --sidebar-muted: #9bb8cf;
+  --sidebar-border: rgba(255, 255, 255, 0.14);
+  --sidebar-hover: rgba(214, 205, 136, 0.18);
+
+  /* ---- Status colours ---- */
+  --success: #15803d;
+  --warning: #b45309;
+  --danger: #b91c1c;
+  --info: #0b4d87;
+
+  /* ---- Aliases for the legacy variable names used in App.css ---- */
+  --panel: var(--surface);
+  --panel-alt: var(--surface-muted);
+  --line: var(--border);
+  --primary: var(--accent);
+  --primary-soft: var(--accent-soft);
+
+  color-scheme: light;
+}
+
+/* ---------------------------- Role accents ----------------------------- */
+[data-role='student'],
+[data-role='class_rep'] {
+  --accent: #06b2c5;
+  --accent-bright: #22d3ee;
+  --accent-soft: rgba(6, 178, 197, 0.16);
+  --accent-glow: rgba(6, 178, 197, 0.35);
+}
+
+[data-role='lecturer'] {
+  --accent: #22a352;
+  --accent-bright: #4ade80;
+  --accent-soft: rgba(34, 197, 94, 0.16);
+  --accent-glow: rgba(34, 197, 94, 0.35);
+}
+
+[data-role='admin'] {
+  --accent: #8a0a6e;
+  --accent-bright: #e46ac4;
+  --accent-soft: rgba(138, 10, 110, 0.14);
+  --accent-glow: rgba(228, 106, 196, 0.35);
+}
+
+/* ------------------------------ Dark theme ----------------------------- */
+[data-theme='dark'] {
+  --bg: #031e3b;
+  --surface: #0a2f52;
+  --surface-muted: #0d3a63;
+  --border: rgba(255, 255, 255, 0.12);
+  --text: #f3efd0;
+  --muted: #9fb3c8;
+  --heading: var(--gold-soft);
+
+  --button-bg: #0d3a63;
+  --button-hover: #124a7d;
+  --toggle-bg: #0d3a63;
+  --toggle-hover: #124a7d;
+
+  --primary-action-bg: var(--gold);
+  --primary-action-text: #031e3b;
+  --primary-action-hover: var(--gold-soft);
+
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+
+  --sidebar-bg: #021a33;
+  --sidebar-border: rgba(255, 255, 255, 0.1);
+
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --info: #7cc0ff;
+
+  color-scheme: dark;
+}
+
+[data-theme='dark'][data-role='admin'],
+[data-theme='dark'] [data-role='admin'] {
+  --accent: #e46ac4;
+  --accent-soft: rgba(228, 106, 196, 0.18);
+}
+[data-theme='dark'][data-role='lecturer'],
+[data-theme='dark'] [data-role='lecturer'] {
+  --accent: #4ade80;
+}
+[data-theme='dark'][data-role='student'],
+[data-theme='dark'] [data-role='student'],
+[data-theme='dark'][data-role='class_rep'],
+[data-theme='dark'] [data-role='class_rep'] {
+  --accent: #22d3ee;
+}
