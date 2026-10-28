@@ -17,9 +17,8 @@
   --gold-soft: #d6cd88;
 
   /* ---- Typography ---- */
-  --brand-font: 'Orbitron', 'Exo 2', sans-serif;
-  --body-font: 'Gill Sans', 'Gill Sans MT', Calibri, 'Trebuchet MS', Inter,
-    system-ui, sans-serif;
+  --brand-font: 'Orbitron', sans-serif;
+  --body-font: 'Lexend', sans-serif;
 
   /* ---- Role accent (overridden by [data-role]) ---- */
   --accent: #0868b7;

@@ -30,8 +30,16 @@ body {
 
 h1,
 h2,
-h3 {
+h3,
+h4,
+h5,
+h6 {
   color: var(--heading);
+  font-family: var(--brand-font);
+}
+
+th {
+  font-family: var(--brand-font);
 }
 
 .brand-font {
@@ -50,6 +58,7 @@ textarea {
   font: inherit;
 }
 button {
+  font-family: var(--brand-font);
   border: 1px solid var(--border);
   background: var(--button-bg);
   color: var(--text);
