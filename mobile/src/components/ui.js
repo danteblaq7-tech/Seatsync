@@ -327,7 +327,7 @@ export function Badge ({ children, tone = 'default', style }) {
 /** .stat-card (single column at <= 480px, two columns above) */
 export function StatCard ({ label, value, style }) {
   return (
-    <View style={[styles.statCard, { backgroundColor: colors.surfaceMuted, borderColor: colors.border, ...shadow }, style]}>
+    <View style={[styles.statCard, { backgroundColor: colors.surface, borderColor: colors.border, ...shadow }, style]}>
       <Text style={type.stat}>{label}</Text>
       <Text style={[type.statValue, { marginTop: 10 }]}>{String(value ?? '')}</Text>
     </View>
@@ -483,7 +483,7 @@ const styles = StyleSheet.create({
   },
   badge: { paddingVertical: 6, paddingHorizontal: 8, borderRadius: radius.chip, alignSelf: 'flex-start' },
   statCard: {
-    backgroundColor: colors.surfaceMuted,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
     borderRadius: radius.statCard,

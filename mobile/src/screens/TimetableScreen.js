@@ -480,7 +480,7 @@ export default function TimetableScreen () {
                       style={[styles.card, {
                         top, height, left: left + 3, width: width - 6,
                         borderColor: conflict ? colors.danger : eventTypeColors[kind] || colors.border,
-                        backgroundColor: conflict ? colors.conflictBg : colors.surfaceMuted,
+                        backgroundColor: conflict ? colors.conflictBg : colors.surface,
                         zIndex: conflict ? 4 : 2,
                         padding: crowded ? undefined : undefined
                       }, crowded && { paddingVertical: 5, paddingHorizontal: 6, gap: 2, justifyContent: 'flex-start', alignItems: 'flex-start' }]}>

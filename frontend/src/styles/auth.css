@@ -32,7 +32,7 @@
   flex-direction: column;
   justify-content: center;
   gap: 4px;
-  background: linear-gradient(180deg, var(--surface), var(--surface-muted));
+  background: var(--surface);
 }
 
 .auth-brand-panel {
@@ -40,7 +40,7 @@
   display: grid;
   place-items: center;
   padding: 2rem;
-  background: var(--navy);
+  background: var(--sidebar-bg);
   overflow: hidden;
 }
 
@@ -131,8 +131,8 @@
 }
 
 .auth-switch.active {
-  background: var(--navy);
-  color: var(--cream);
+  background: var(--primary-action-bg);
+  color: var(--primary-action-text);
   box-shadow: 0 4px 12px rgba(5, 67, 108, 0.25);
 }
 
@@ -203,13 +203,13 @@
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--navy);
-  background: var(--gold);
+  color: var(--primary-action-text);
+  background: var(--primary-action-bg);
   box-shadow: 0 10px 30px rgba(185, 154, 69, 0.25);
 }
 
 .auth-form button[type='submit']:hover {
-  background: var(--gold-soft);
+  background: var(--primary-action-hover);
   transform: translateY(-3px);
   box-shadow: 0 14px 36px rgba(185, 154, 69, 0.35);
 }

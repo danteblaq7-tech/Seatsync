@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import { Appearance } from 'react-native'
+import { Appearance, Platform } from 'react-native'
 import * as SecureStore from 'expo-secure-store'
 import { useAuth } from './AuthContext'
 import { setActivePalette } from '../theme'
@@ -13,13 +13,28 @@ function resolveRole (roles = []) {
   return (role || 'STUDENT').toLowerCase()
 }
 
+async function getStoredTheme () {
+  if (Platform.OS === 'web') {
+    return typeof window === 'undefined' ? null : window.localStorage.getItem(THEME_KEY)
+  }
+  return SecureStore.getItemAsync(THEME_KEY)
+}
+
+async function storeTheme (theme) {
+  if (Platform.OS === 'web') {
+    if (typeof window !== 'undefined') window.localStorage.setItem(THEME_KEY, theme)
+    return
+  }
+  await SecureStore.setItemAsync(THEME_KEY, theme)
+}
+
 export function ThemeProvider ({ children }) {
   const { user } = useAuth()
   const [theme, setThemeState] = useState('light')
   const [loading, setLoading] = useState(true)
   const role = resolveRole(user?.roles)
 
-  setActivePalette(theme, role)
+  setActivePalette(theme)
 
   useEffect(() => {
     if (typeof Appearance.setColorScheme === 'function') {
@@ -29,7 +44,7 @@ export function ThemeProvider ({ children }) {
 
   useEffect(() => {
     let active = true
-    SecureStore.getItemAsync(THEME_KEY)
+    getStoredTheme()
       .then(saved => {
         if (active && (saved === 'light' || saved === 'dark')) setThemeState(saved)
       })
@@ -51,7 +66,7 @@ export function ThemeProvider ({ children }) {
     }
     setThemeState(nextTheme)
     try {
-      await SecureStore.setItemAsync(THEME_KEY, nextTheme)
+      await storeTheme(nextTheme)
     } catch (error) {
       console.warn('[SeatSync] Unable to save theme preference:', error?.message)
     }

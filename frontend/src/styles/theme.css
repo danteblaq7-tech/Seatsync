@@ -1,141 +1,99 @@
-/* ==========================================================================
-   SeatSync design tokens
-   Ported from the prototype (Seat-sync): navy + cream + gold brand palette,
-   per-role accent colours, light/dark themes.
-   Every other stylesheet should read these variables instead of hard-coding
-   colours.
-   ========================================================================== */
-
 :root {
-  /* ---- Brand palette (from prototype logo / login) ---- */
-  --navy: #05436c;
-  --navy-deep: #032e4d;
-  --navy-bright: #0b4d87;
-  --cream: #ffffd0;
-  --gold: #b99a45;
-  --tan: #bfaa85;
-  --gold-soft: #d6cd88;
+  --color-primary: #0B4368;
+  --color-secondary: #C5A880;
+  --color-accent: #007AFF;
+  --color-bg-app: #F8FAFC;
+  --color-surface: #FFFFFF;
+  --color-text-main: #1E293B;
+  --color-text-muted: #64748B;
+  --color-border: #E2E8F0;
 
-  /* ---- Typography ---- */
   --brand-font: 'Orbitron', sans-serif;
   --body-font: 'Lexend', sans-serif;
 
-  /* ---- Role accent (overridden by [data-role]) ---- */
-  --accent: #0868b7;
-  --accent-bright: #4aa3e8; /* readable on the navy sidebar */
-  --accent-soft: rgba(8, 104, 183, 0.14);
-  --accent-glow: rgba(8, 104, 183, 0.35);
+  --bg: var(--color-bg-app);
+  --surface: var(--color-surface);
+  --surface-muted: #F1F5F9;
+  --border: var(--color-border);
+  --text: var(--color-text-main);
+  --muted: var(--color-text-muted);
+  --heading: var(--color-primary);
+  --navy: var(--color-primary);
+  --navy-deep: #08314A;
+  --navy-bright: var(--color-accent);
+  --cream: var(--color-bg-app);
+  --gold: var(--color-secondary);
+  --tan: var(--color-secondary);
+  --gold-soft: var(--color-secondary);
 
-  /* ---- Light theme surfaces ---- */
-  --bg: var(--cream);
-  --surface: #ffffff;
-  --surface-muted: #fbf8e3;
-  --border: #e3dcb4;
-  --text: #031e3b;
-  --muted: #5f6f7e;
-  --heading: var(--navy);
+  --accent: var(--color-accent);
+  --accent-bright: var(--color-accent);
+  --accent-soft: rgb(0 122 255 / 12%);
+  --accent-glow: rgb(0 122 255 / 30%);
 
-  --button-bg: #f3efcf;
-  --button-hover: #e9e3b8;
-  --toggle-bg: #f3efcf;
-  --toggle-hover: #e9e3b8;
+  --button-bg: var(--color-surface);
+  --button-hover: var(--surface-muted);
+  --toggle-bg: var(--color-surface);
+  --toggle-hover: var(--surface-muted);
+  --primary-action-bg: var(--color-primary);
+  --primary-action-text: #FFFFFF;
+  --primary-action-hover: #08314A;
+  --shadow: 0 10px 30px rgb(15 23 42 / 10%);
 
-  --primary-action-bg: var(--navy);
-  --primary-action-text: #ffffff;
-  --primary-action-hover: var(--navy-bright);
+  --sidebar-bg: var(--color-primary);
+  --sidebar-text: #F8FAFC;
+  --sidebar-muted: #CBD5E1;
+  --sidebar-border: rgb(255 255 255 / 18%);
+  --sidebar-hover: rgb(255 255 255 / 12%);
 
-  --shadow: 0 10px 30px rgba(5, 67, 108, 0.1);
+  --success: #15803D;
+  --warning: #9A4D00;
+  --danger: #B91C1C;
+  --info: #075985;
 
-  /* ---- Sidebar (navy in both themes) ---- */
-  --sidebar-bg: var(--navy);
-  --sidebar-text: #e8f0f7;
-  --sidebar-muted: #9bb8cf;
-  --sidebar-border: rgba(255, 255, 255, 0.14);
-  --sidebar-hover: rgba(214, 205, 136, 0.18);
-
-  /* ---- Status colours ---- */
-  --success: #15803d;
-  --warning: #b45309;
-  --danger: #b91c1c;
-  --info: #0b4d87;
-
-  /* ---- Aliases for the legacy variable names used in App.css ---- */
   --panel: var(--surface);
   --panel-alt: var(--surface-muted);
   --line: var(--border);
-  --primary: var(--accent);
+  --primary: var(--color-primary);
   --primary-soft: var(--accent-soft);
 
   color-scheme: light;
 }
 
-/* ---------------------------- Role accents ----------------------------- */
-[data-role='student'],
-[data-role='class_rep'] {
-  --accent: #06b2c5;
-  --accent-bright: #22d3ee;
-  --accent-soft: rgba(6, 178, 197, 0.16);
-  --accent-glow: rgba(6, 178, 197, 0.35);
-}
-
-[data-role='lecturer'] {
-  --accent: #22a352;
-  --accent-bright: #4ade80;
-  --accent-soft: rgba(34, 197, 94, 0.16);
-  --accent-glow: rgba(34, 197, 94, 0.35);
-}
-
-[data-role='admin'] {
-  --accent: #8a0a6e;
-  --accent-bright: #e46ac4;
-  --accent-soft: rgba(138, 10, 110, 0.14);
-  --accent-glow: rgba(228, 106, 196, 0.35);
-}
-
-/* ------------------------------ Dark theme ----------------------------- */
 [data-theme='dark'] {
-  --bg: #031e3b;
-  --surface: #0a2f52;
-  --surface-muted: #0d3a63;
-  --border: rgba(255, 255, 255, 0.12);
-  --text: #f3efd0;
-  --muted: #9fb3c8;
-  --heading: var(--gold-soft);
+  --color-primary: #38BDF8;
+  --color-secondary: #D4B886;
+  --color-accent: #3B82F6;
+  --color-bg-app: #0F172A;
+  --color-surface: #1E293B;
+  --color-text-main: #F8FAFC;
+  --color-text-muted: #94A3B8;
+  --color-border: #334155;
 
-  --button-bg: #0d3a63;
-  --button-hover: #124a7d;
-  --toggle-bg: #0d3a63;
-  --toggle-hover: #124a7d;
+  --surface-muted: #27364B;
+  --heading: var(--color-primary);
+  --navy-deep: #0B1220;
+  --accent-soft: rgb(59 130 246 / 18%);
+  --accent-glow: rgb(59 130 246 / 32%);
+  --button-bg: var(--color-surface);
+  --button-hover: #27364B;
+  --toggle-bg: var(--color-surface);
+  --toggle-hover: #27364B;
+  --primary-action-bg: var(--color-primary);
+  --primary-action-text: #0F172A;
+  --primary-action-hover: #7DD3FC;
+  --shadow: 0 10px 30px rgb(0 0 0 / 35%);
 
-  --primary-action-bg: var(--gold);
-  --primary-action-text: #031e3b;
-  --primary-action-hover: var(--gold-soft);
+  --sidebar-bg: #111C30;
+  --sidebar-text: #F8FAFC;
+  --sidebar-muted: #CBD5E1;
+  --sidebar-border: rgb(148 163 184 / 20%);
+  --sidebar-hover: rgb(148 163 184 / 14%);
 
-  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-
-  --sidebar-bg: #021a33;
-  --sidebar-border: rgba(255, 255, 255, 0.1);
-
-  --success: #4ade80;
-  --warning: #fbbf24;
-  --danger: #f87171;
-  --info: #7cc0ff;
+  --success: #4ADE80;
+  --warning: #FBBF24;
+  --danger: #F87171;
+  --info: #7DD3FC;
 
   color-scheme: dark;
-}
-
-[data-theme='dark'][data-role='admin'],
-[data-theme='dark'] [data-role='admin'] {
-  --accent: #e46ac4;
-  --accent-soft: rgba(228, 106, 196, 0.18);
-}
-[data-theme='dark'][data-role='lecturer'],
-[data-theme='dark'] [data-role='lecturer'] {
-  --accent: #4ade80;
-}
-[data-theme='dark'][data-role='student'],
-[data-theme='dark'] [data-role='student'],
-[data-theme='dark'][data-role='class_rep'],
-[data-theme='dark'] [data-role='class_rep'] {
-  --accent: #22d3ee;
 }

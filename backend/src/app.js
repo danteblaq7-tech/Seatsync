@@ -38,11 +38,18 @@ const allowedOrigins = (process.env.FRONTEND_URL || '')
   .map(url => url.trim())
   .filter(Boolean)
 
+if (process.env.NODE_ENV !== 'production') {
+  allowedOrigins.push('http://localhost:8081', 'http://127.0.0.1:8081')
+}
+
+const isAllowedOrigin = origin =>
+  !origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)
+
 // Configure Socket.io with the same allowed origins for secure cookie/auth support
 const io = new Server(httpServer, {
   cors: {
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      if (isAllowedOrigin(origin)) {
         return callback(null, true)
       }
       return callback(new Error('Not allowed by Socket.io CORS'))
@@ -75,7 +82,7 @@ app.use(
   cors({
     origin: (origin, callback) => {
       // No Origin header = native mobile app, Postman, curl -> always allowed
-      if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      if (isAllowedOrigin(origin)) {
         return callback(null, true)
       }
       return callback(new Error(`CORS blocked: ${origin}`))

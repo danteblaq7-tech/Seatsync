@@ -1,77 +1,73 @@
-const roleAccents = {
-  admin: { light: '#8a0a6e', dark: '#e46ac4' },
-  lecturer: { light: '#22a352', dark: '#4ade80' },
-  student: { light: '#06b2c5', dark: '#22d3ee' },
-  class_rep: { light: '#06b2c5', dark: '#22d3ee' }
-}
-
-function createPalette (mode = 'light', role = 'student') {
+function createPalette (mode = 'light') {
   const dark = mode === 'dark'
-  const accent = roleAccents[role]?.[dark ? 'dark' : 'light'] || (dark ? '#4aa3e8' : '#0868b7')
-
+  const colorPrimary = dark ? '#38BDF8' : '#0B4368'
+  const colorSecondary = dark ? '#D4B886' : '#C5A880'
+  const colorAccent = dark ? '#3B82F6' : '#007AFF'
+  const colorBgApp = dark ? '#0F172A' : '#F8FAFC'
+  const colorSurface = dark ? '#1E293B' : '#FFFFFF'
+  const colorTextMain = dark ? '#F8FAFC' : '#1E293B'
+  const colorTextMuted = dark ? '#94A3B8' : '#64748B'
+  const colorBorder = dark ? '#334155' : '#E2E8F0'
   return {
-    bg: dark ? '#031e3b' : '#ffffd0',
-    surface: dark ? '#0a2f52' : '#ffffff',
-    surfaceMuted: dark ? '#0d3a63' : '#fbf8e3',
-    border: dark ? 'rgba(255,255,255,0.12)' : '#e3dcb4',
-    line: dark ? 'rgba(255,255,255,0.12)' : '#e3dcb4',
-    text: dark ? '#f3efd0' : '#031e3b',
-    muted: dark ? '#9fb3c8' : '#5f6f7e',
-    heading: dark ? '#d6cd88' : '#05436c',
-    buttonBg: dark ? '#0d3a63' : '#f3efcf',
-    buttonHover: dark ? '#124a7d' : '#e9e3b8',
-    toggleBg: dark ? '#0d3a63' : '#f3efcf',
-    primary: accent,
-    accent,
-    accentForeground: dark || role !== 'admin' ? '#031e3b' : '#ffffff',
-    primaryActionBg: dark ? '#b99a45' : '#05436c',
-    primaryActionText: dark ? '#031e3b' : '#ffffff',
-    accentBright: role === 'admin'
-      ? '#e46ac4'
-      : role === 'lecturer'
-        ? '#4ade80'
-        : role === 'student' || role === 'class_rep'
-          ? '#22d3ee'
-          : '#4aa3e8',
-    accentSoft: role === 'admin'
-      ? dark ? 'rgba(228,106,196,0.18)' : 'rgba(138,10,110,0.14)'
-      : role === 'lecturer'
-        ? dark ? 'rgba(74,222,128,0.16)' : 'rgba(34,163,82,0.14)'
-        : dark ? 'rgba(34,211,238,0.16)' : 'rgba(6,178,197,0.14)',
-    success: dark ? '#4ade80' : '#15803d',
-    successText: dark ? '#4ade80' : '#15803d',
-    warning: dark ? '#fbbf24' : '#b45309',
+    colorPrimary,
+    colorSecondary,
+    colorAccent,
+    colorBgApp,
+    colorSurface,
+    colorTextMain,
+    colorTextMuted,
+    colorBorder,
+    bg: colorBgApp,
+    surface: colorSurface,
+    surfaceMuted: dark ? '#27364B' : '#F1F5F9',
+    border: colorBorder,
+    line: colorBorder,
+    text: colorTextMain,
+    muted: colorTextMuted,
+    heading: colorPrimary,
+    buttonBg: colorSurface,
+    buttonHover: dark ? '#27364B' : '#F1F5F9',
+    toggleBg: colorSurface,
+    primary: colorPrimary,
+    accent: colorAccent,
+    accentForeground: dark ? '#0F172A' : '#FFFFFF',
+    primaryActionBg: colorPrimary,
+    primaryActionText: dark ? '#0F172A' : '#FFFFFF',
+    accentSoft: dark ? 'rgba(59,130,246,0.18)' : 'rgba(0,122,255,0.12)',
+    success: dark ? '#4ADE80' : '#15803D',
+    successText: dark ? '#4ADE80' : '#15803D',
+    warning: dark ? '#FBBF24' : '#9A4D00',
     danger: dark ? '#f87171' : '#b91c1c',
     dangerText: dark ? '#f87171' : '#b91c1c',
     white: '#ffffff',
-    black: dark ? '#b99a45' : '#05436c',
+    black: colorPrimary,
     backdrop: 'rgba(3,30,59,0.58)',
     drawerBackdrop: 'rgba(3,30,59,0.58)',
-    conflictBg: dark ? '#3b2630' : '#fff7f7',
-    conflictBorder: dark ? '#9f5660' : '#fca5a5',
-    conflictText: dark ? '#ffd2d2' : '#7f1d1d',
-    conflictTitle: dark ? '#ffb3b3' : '#991b1b',
-    conflictSoftBorder: dark ? '#75434c' : '#fecaca',
+    conflictBg: dark ? '#3B2630' : '#FFF7F7',
+    conflictBorder: dark ? '#9F5660' : '#FCA5A5',
+    conflictText: dark ? '#FFD2D2' : '#7F1D1D',
+    conflictTitle: dark ? '#FFB3B3' : '#991B1B',
+    conflictSoftBorder: dark ? '#75434C' : '#FECACA',
     codeBg: '#0f172a',
     codeText: '#e2e8f0',
-    tableHeadBg: dark ? '#0d3a63' : '#fbf8e3',
-    pendingBorder: dark ? '#276082' : '#bfdbfe',
-    pendingBg: dark ? '#0d3a63' : '#eff6ff',
-    sidebarBg: dark ? '#021a33' : '#05436c',
+    tableHeadBg: dark ? '#27364B' : '#F1F5F9',
+    pendingBorder: dark ? '#276082' : '#BFDBFE',
+    pendingBg: dark ? '#27364B' : '#EFF6FF',
+    sidebarBg: dark ? '#111C30' : colorPrimary,
     sidebarText: '#e8f0f7',
     sidebarMuted: '#9bb8cf',
     sidebarBorder: 'rgba(255,255,255,0.14)',
     sidebarHover: 'rgba(214,205,136,0.18)',
-    shadowColor: dark ? '#000000' : '#05436c'
+    shadowColor: dark ? '#000000' : '#0B4368'
   }
 }
 
 let activePalette = createPalette()
 let activeMode = 'light'
 
-export function setActivePalette (mode, role) {
+export function setActivePalette (mode) {
   activeMode = mode
-  activePalette = createPalette(mode, role)
+  activePalette = createPalette(mode)
 }
 
 export const colors = new Proxy(activePalette, {
@@ -79,7 +75,7 @@ export const colors = new Proxy(activePalette, {
 })
 
 const badgesFor = () => ({
-  default: { bg: activeMode === 'dark' ? '#0d3a63' : '#f3efcf', fg: colors.text },
+  default: { bg: colors.surfaceMuted, fg: colors.text },
   ok: { bg: activeMode === 'dark' ? '#124a3c' : '#e5f4e9', fg: colors.success },
   warn: { bg: activeMode === 'dark' ? '#55451e' : '#fff1d6', fg: colors.warning },
   muted: { bg: colors.surfaceMuted, fg: colors.text }

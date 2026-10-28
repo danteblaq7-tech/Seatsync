@@ -19,8 +19,6 @@ export const toast = {
   info: m => push('info', m)
 }
 
-const accent = { success: '#07bc0c', error: '#e74c3c', info: '#3498db' }
-
 export function ToastHost ({ duration = 4000 }) {
   const insets = useSafeAreaInsets()
   useTheme()
@@ -57,7 +55,12 @@ function ToastItem ({ item, onClose }) {
   return (
     <Animated.View style={[
       styles.toast,
-      { opacity, borderLeftColor: accent[item.kind], backgroundColor: colors.surface, ...shadow }
+      {
+        opacity,
+        borderLeftColor: item.kind === 'success' ? colors.success : item.kind === 'error' ? colors.danger : colors.accent,
+        backgroundColor: colors.surface,
+        ...shadow
+      }
     ]}>
       <Pressable onPress={onClose}>
         <Text style={[type.bodySm, { color: colors.text }]}>{item.message}</Text>

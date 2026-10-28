@@ -93,11 +93,11 @@ export default function Sidebar ({ user, open, activeRoute, onClose, onNavigate,
                     onPress={() => setExpanded(current => ({ ...current, [group.key]: !isExpanded }))}
                     style={styles.groupToggle}
                   >
-                    <Text style={[type.navGroup, { color: colors.accentBright }]}>{group.label}</Text>
+                    <Text style={[type.navGroup, { color: colors.sidebarMuted }]}>{group.label}</Text>
                     <FontAwesome5
                       name='angle-down'
                       size={14}
-                      color={colors.accentBright}
+                      color={colors.sidebarMuted}
                       style={{ transform: [{ rotate: isExpanded ? '180deg' : '0deg' }] }}
                     />
                   </Pressable>

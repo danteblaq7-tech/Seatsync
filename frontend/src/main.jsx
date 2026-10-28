@@ -6,11 +6,11 @@ import { ToastContainer } from 'react-toastify'
 import { AuthProvider } from './context/AuthContext'
 import { ThemeProvider } from './context/ThemeContext'
 import App from './App.jsx'
+import 'react-toastify/dist/ReactToastify.css'
 import './index.css'
 import './styles/theme.css'
 import './styles/auth.css'
 import './styles/dark-overrides.css'
-import 'react-toastify/dist/ReactToastify.css'
 
 const queryClient = new QueryClient()
 

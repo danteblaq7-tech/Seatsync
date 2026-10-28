@@ -202,7 +202,7 @@ export default function VenuesScreen () {
             {filtered.length ? filtered.map(item => {
               const live = getLiveStatus(item)
               return (
-                <View key={item.id ?? item.name} style={{ backgroundColor: colors.surfaceMuted, borderWidth: 1, borderColor: colors.border, borderRadius: radius.card, padding: 16, gap: 14 }}>
+                <View key={item.id ?? item.name} style={{ backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.card, padding: 16, gap: 14 }}>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
                     <View style={{ flex: 1 }}>
                       <Eyebrow small>Venue</Eyebrow>
