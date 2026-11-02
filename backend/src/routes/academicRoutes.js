@@ -15,8 +15,10 @@ import {
   addCohortProgression,
   getEligibleCohorts,
   getPendingCohortProfileRequests,
+  getCohortRequestCountsController,
   reviewPendingCohortProfileRequest,
   getCohortMembershipRequests,
+  getCohortMembers,
   reviewCohortMembership,
   addSemester,
   getCohorts,
@@ -152,10 +154,20 @@ router.get(
   requireRole('ADMIN'),
   getPendingCohortProfileRequests
 )
+router.get(
+  '/cohort-request-counts',
+  requireRole('ADMIN', 'CLASS_REP'),
+  getCohortRequestCountsController
+)
 router.post(
   '/cohort-profile-requests/:requestId/review',
   requireRole('ADMIN'),
   reviewPendingCohortProfileRequest
+)
+router.get(
+  '/cohorts/:id/members',
+  requireRole('ADMIN', 'CLASS_REP'),
+  getCohortMembers
 )
 router.get(
   '/cohorts/:id/membership-requests',

@@ -1,5 +1,6 @@
 import db from '../config/db.js'
 import { query } from '../repositories/sqlRepository.js'
+import { createNotification } from './notifications/notificationService.js'
 
 const normalizeRoles = user =>
   Array.isArray(user?.roles) ? user.roles : user?.roles ? [user.roles] : []
@@ -222,6 +223,20 @@ export const reviewCohortProfileRequest = async (
       [decision, reviewerId, Number(requestId)]
     )
     await connection.commit()
+    await createNotification({
+      userId: request.user_id,
+      type: `academic:cohort_profile:${decision.toLowerCase()}`,
+      title:
+        decision === 'APPROVED'
+          ? 'Cohort profile approved'
+          : 'Cohort profile needs an update',
+      message:
+        decision === 'APPROVED'
+          ? 'Your cohort profile has been approved. You can now use your academic workspace.'
+          : 'Your cohort profile request was not approved. Review your academic details and submit it again.',
+      entityType: 'cohort_profile_request',
+      entityId: requestId
+    })
     return {
       id: Number(requestId),
       status: decision,
@@ -263,6 +278,39 @@ export const listCohortMembershipRequests = async (cohortId, user) => {
      JOIN semesters sem ON sem.id = cmr.semester_id
      WHERE cmr.cohort_id = ? AND cmr.status = 'PENDING'
      ORDER BY cmr.created_at`,
+    [Number(cohortId)]
+  )
+}
+
+export const listCohortMembers = async (cohortId, user) => {
+  const roles = normalizeRoles(user)
+  if (!roles.includes('ADMIN')) {
+    const connection = await db.getConnection()
+    try {
+      await assertCohortRepresentative(
+        connection,
+        Number(cohortId),
+        user?.id
+      )
+    } finally {
+      connection.release()
+    }
+  }
+  return query(
+    `SELECT s.id, s.student_number, s.current_year, s.admission_year,
+        s.status, u.first_name, u.last_name, u.email, u.phone_number,
+        p.name AS programme_name,
+        EXISTS (
+          SELECT 1 FROM cohort_representatives cr
+          WHERE cr.student_id = s.id AND cr.cohort_id = s.cohort_id
+            AND cr.is_active = TRUE
+            AND (cr.end_date IS NULL OR cr.end_date >= CURDATE())
+        ) AS is_class_representative
+     FROM students s
+     JOIN users u ON u.id = s.user_id
+     JOIN programmes p ON p.id = s.programme_id
+     WHERE s.cohort_id = ?
+     ORDER BY u.last_name, u.first_name, s.student_number`,
     [Number(cohortId)]
   )
 }
@@ -366,6 +414,20 @@ export const reviewCohortMembershipRequest = async (
       [decision, user.id, Number(requestId)]
     )
     await connection.commit()
+    await createNotification({
+      userId: request.user_id,
+      type: `academic:cohort_membership:${decision.toLowerCase()}`,
+      title:
+        decision === 'APPROVED'
+          ? 'Cohort membership approved'
+          : 'Cohort membership needs an update',
+      message:
+        decision === 'APPROVED'
+          ? 'Your academic details and cohort membership have been approved.'
+          : 'Your cohort membership request was not approved. Review your academic details and submit it again.',
+      entityType: 'cohort_membership_request',
+      entityId: requestId
+    })
     return {
       id: Number(requestId),
       cohortId: Number(request.cohort_id),
@@ -377,5 +439,43 @@ export const reviewCohortMembershipRequest = async (
     throw error
   } finally {
     connection.release()
+  }
+}
+
+export const getCohortRequestCounts = async user => {
+  const roles = normalizeRoles(user)
+  const [profileRequests, membershipRequests] = await Promise.all([
+    roles.includes('ADMIN')
+      ? query(
+          `SELECT COUNT(*) AS total FROM cohort_profile_requests
+           WHERE status = 'PENDING'`
+        )
+      : Promise.resolve([{ total: 0 }]),
+    roles.includes('ADMIN')
+      ? query(
+          `SELECT COUNT(*) AS total FROM cohort_membership_requests
+           WHERE status = 'PENDING'`
+        )
+      : query(
+          `SELECT COUNT(*) AS total
+           FROM cohort_membership_requests cmr
+           WHERE cmr.status = 'PENDING'
+             AND EXISTS (
+               SELECT 1 FROM cohort_representatives cr
+               JOIN students s ON s.id = cr.student_id
+               WHERE cr.cohort_id = cmr.cohort_id
+                 AND s.user_id = ? AND cr.is_active = TRUE
+                 AND (cr.end_date IS NULL OR cr.end_date >= CURDATE())
+             )`,
+          [user.id]
+        )
+  ])
+  const profileCount = Number(profileRequests[0]?.total || 0)
+  const membershipCount = Number(membershipRequests[0]?.total || 0)
+
+  return {
+    profileRequests: profileCount,
+    membershipRequests: membershipCount,
+    total: profileCount + membershipCount
   }
 }

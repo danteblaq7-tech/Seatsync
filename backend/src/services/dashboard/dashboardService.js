@@ -1,4 +1,8 @@
 import { query } from '../../repositories/sqlRepository.js'
+import {
+  getExamVisibility,
+  getTimetableVisibility
+} from '../timetableVisibility.js'
 
 const getCurrentDayName = () => {
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -209,8 +213,23 @@ const getLecturerDashboard = async user => {
     'SELECT COUNT(DISTINCT unit_id) AS total FROM lecturer_units WHERE lecturer_id = ?',
     [lecturer.id]
   )
-  const { availableVenues, occupiedVenues, activeMakeupClasses } =
-    await getLiveVenueSummary()
+  const { availableVenues, occupiedVenues } = await getLiveVenueSummary()
+  const activeMakeupClasses = await query(
+    `SELECT so.*, te.unit_id AS course_id, te.lecturer_id, te.cohort_id,
+       u.code AS unit_code, u.name AS unit_name,
+       v.name AS venue_name, v.code AS venue_code
+     FROM schedule_overrides so
+     JOIN timetable_entries te ON te.id = so.timetable_entry_id
+     JOIN units u ON u.id = te.unit_id
+     JOIN venues v ON v.id = so.new_venue_id
+     WHERE te.lecturer_id = ? AND so.effective_date >= CURDATE()
+       AND so.status = 'APPROVED'
+     ORDER BY so.effective_date, so.new_start_time`,
+    [lecturer.id]
+  )
+  activeMakeupClasses.forEach(event => {
+     event.value = `${String(event.effective_date).slice(0, 10)} · ${event.unit_code} ${event.unit_name} · ${event.venue_name} · ${event.new_start_time}-${event.new_end_time}`
+  })
   const entries = rows =>
     rows.map(event => ({
       ...event,
@@ -279,6 +298,12 @@ export const getDashboardSummary = async user => {
     )
   )[0]
 
+  const scopedUser = { ...user, roles }
+  const timetableVisibility = getTimetableVisibility(scopedUser)
+  const timetableScope = timetableVisibility.clause
+    ? `AND ${timetableVisibility.clause.slice('WHERE '.length)}`
+    : ''
+  const examVisibility = getExamVisibility(scopedUser)
   const liveVenueSummary = await getLiveVenueSummary()
   const venueStats = (
     await query('SELECT COUNT(*) AS total_venues FROM venues')
@@ -288,13 +313,17 @@ export const getDashboardSummary = async user => {
 
   const timetableStats = (
     await query(
-      'SELECT COUNT(*) AS active_entries FROM timetable_entries WHERE status = "SCHEDULED"'
+      `SELECT COUNT(*) AS active_entries FROM timetable_entries te
+       WHERE te.status = 'SCHEDULED' ${timetableScope}`,
+      timetableVisibility.params
     )
   )[0]
 
   const examStats = (
     await query(
-      'SELECT COUNT(*) AS upcoming_exams FROM exams WHERE exam_date >= CURDATE()'
+      `SELECT COUNT(*) AS upcoming_exams FROM exams e
+       WHERE e.exam_date >= CURDATE() ${examVisibility.clause}`,
+      examVisibility.params
     )
   )[0]
 
@@ -318,8 +347,10 @@ export const getDashboardSummary = async user => {
        FROM timetable_entries te
       LEFT JOIN units c ON c.id = te.unit_id
        LEFT JOIN venues v ON v.id = te.venue_id
+       WHERE 1 = 1 ${timetableScope}
        ORDER BY te.updated_at DESC
-       LIMIT 6`
+       LIMIT 6`,
+      timetableVisibility.params
     )
   )
 
@@ -340,10 +371,10 @@ export const getDashboardSummary = async user => {
        FROM timetable_entries te
       LEFT JOIN units c ON c.id = te.unit_id
        LEFT JOIN venues v ON v.id = te.venue_id
-       WHERE te.day_of_week = ?
+       WHERE te.day_of_week = ? ${timetableScope}
        ORDER BY te.start_time ASC
        LIMIT 10`,
-      [todayName]
+      [todayName, ...timetableVisibility.params]
     )
   )
 
@@ -354,10 +385,10 @@ export const getDashboardSummary = async user => {
        FROM timetable_entries te
       LEFT JOIN units c ON c.id = te.unit_id
        LEFT JOIN venues v ON v.id = te.venue_id
-       WHERE te.day_of_week >= ?
+       WHERE te.day_of_week >= ? ${timetableScope}
        ORDER BY te.day_of_week, te.start_time ASC
        LIMIT 8`,
-      [todayName]
+      [todayName, ...timetableVisibility.params]
     )
   )
 
@@ -366,14 +397,35 @@ export const getDashboardSummary = async user => {
        c.name AS course_name, c.code AS course_code
      FROM exams e
      LEFT JOIN units c ON c.id = e.unit_id
-     WHERE e.exam_date >= CURDATE()
+     WHERE e.exam_date >= CURDATE() ${examVisibility.clause}
      ORDER BY e.exam_date ASC, e.start_time ASC
-     LIMIT 6`
+     LIMIT 6`,
+    examVisibility.params
   )
 
   const notifications = await query(
-    `SELECT * FROM notifications ORDER BY created_at DESC LIMIT 6`
+    `SELECT * FROM notifications
+     WHERE user_id = ? ORDER BY created_at DESC LIMIT 6`,
+    [Number(user.id)]
   )
+  const activeMakeupClasses = roles.includes('ADMIN')
+    ? liveVenueSummary.activeMakeupClasses
+    : await query(
+        `SELECT so.*, te.unit_id AS course_id, te.lecturer_id, te.cohort_id,
+           u.code AS unit_code, u.name AS unit_name,
+           v.name AS venue_name, v.code AS venue_code
+         FROM schedule_overrides so
+         JOIN timetable_entries te ON te.id = so.timetable_entry_id
+         JOIN units u ON u.id = te.unit_id
+         JOIN venues v ON v.id = so.new_venue_id
+         WHERE so.effective_date >= CURDATE() AND so.status = 'APPROVED'
+           ${timetableScope}
+         ORDER BY so.effective_date, so.new_start_time`,
+        timetableVisibility.params
+      )
+  activeMakeupClasses.forEach(event => {
+    event.value = `${String(event.effective_date).slice(0, 10)} · ${event.unit_code} ${event.unit_name} · ${event.venue_name} · ${event.new_start_time}-${event.new_end_time}`
+  })
 
   const baseSummary = {
     totalVenues: Number(venueStats?.total_venues || 0),
@@ -382,7 +434,7 @@ export const getDashboardSummary = async user => {
     activeTimetableEntries: Number(timetableStats?.active_entries || 0),
     currentAcademicYear: currentYear?.name || 'N/A',
     currentSemester: currentSemester?.name || 'N/A',
-    activeMakeupClasses: liveVenueSummary.activeMakeupClasses,
+    activeMakeupClasses,
     upcomingExams: Number(examStats?.upcoming_exams || 0),
     schedulingConflicts: Number(conflictStats?.scheduling_conflicts || 0),
     recentTimetableChanges: safeArray(recentEntries),

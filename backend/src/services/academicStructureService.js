@@ -145,7 +145,7 @@ const syncProgrammeCohortTypes = async programme => {
   if (!Number.isInteger(duration) || duration < 1) {
     throw new Error('Programme duration must be a positive whole number.')
   }
-  const [semesterTypes] = await rawQuery(
+  const semesterTypes = await rawQuery(
     'SELECT number FROM semester_types WHERE is_active = TRUE ORDER BY number'
   )
   for (let studyYear = 1; studyYear <= duration; studyYear += 1) {
@@ -222,11 +222,11 @@ export const createSemester = async payload => {
     )
     semesterTypeId = Number(legacyType?.id)
   }
-  const [semesterTypes] = await rawQuery(
+  const semesterTypes = await rawQuery(
     'SELECT id, name, number FROM semester_types WHERE id = ? AND is_active = TRUE',
     [semesterTypeId]
   )
-  const semesterType = semesterTypes?.[0]
+  const semesterType = semesterTypes[0]
   if (!semesterType) {
     throw new Error('Select an active reusable semester type.')
   }
@@ -301,7 +301,7 @@ export const updateSemester = async (id, updates) => {
     )
     semesterTypeId = Number(legacyType?.id)
   }
-  const [types] = await rawQuery(
+  const types = await rawQuery(
     'SELECT id, name, number FROM semester_types WHERE id = ? AND is_active = TRUE',
     [semesterTypeId]
   )
@@ -911,7 +911,7 @@ export const createCourse = async payload => {
       validationError: 'Select a reusable semester type for the unit.'
     }
   }
-  const [semesterTypes] = await rawQuery(
+  const semesterTypes = await rawQuery(
     'SELECT id FROM semester_types WHERE id = ? AND is_active = TRUE',
     [semesterTypeId]
   )
@@ -978,7 +978,7 @@ export const updateCourse = async (id, updates) => {
   delete normalizedPayload.semesterTypeId
   if (normalizedPayload.semester_type_id !== undefined) {
     const typeId = Number(normalizedPayload.semester_type_id)
-    const [semesterTypes] = await rawQuery(
+    const semesterTypes = await rawQuery(
       'SELECT id FROM semester_types WHERE id = ? AND is_active = TRUE',
       [typeId]
     )

@@ -93,6 +93,9 @@ export default function AcademicSetupPage () {
       queryKey: ['academic-semester-types'],
       queryFn: async () => toArray(await api.get('/api/academic/semester-types'))
     })
+  const activeSemesterTypes = semesterTypes.filter(
+    type => Number(type.is_active ?? type.isActive) === 1
+  )
 
   const recordEndpoints = {
     faculty: '/api/academic/faculties',
@@ -947,7 +950,7 @@ export default function AcademicSetupPage () {
                       }
                     >
                       <option value=''>Select semester type</option>
-                      {semesterTypes.map(type => (
+                      {activeSemesterTypes.map(type => (
                         <option key={type.id} value={type.id}>
                           {type.name} (Semester {type.number})
                         </option>
@@ -1296,7 +1299,7 @@ export default function AcademicSetupPage () {
                   }
                 >
                   <option value=''>Select semester type</option>
-                  {semesterTypes.map(type => (
+                  {activeSemesterTypes.map(type => (
                     <option key={type.id} value={type.id}>
                       {type.name} (Semester {type.number})
                     </option>

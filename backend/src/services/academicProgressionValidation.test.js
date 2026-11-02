@@ -58,6 +58,43 @@ test('validates reusable unit types and progression counts for a period', async 
   assert.equal(result.progressions[0].cohort_id, 9)
 })
 
+test('allows different intake cohorts to share the same cohort type', async () => {
+  const result = await validateAcademicPeriod(
+    makeConnection({
+      progressions: [
+        {
+          cohort_id: 9,
+          student_count: 21,
+          programme_id: 4,
+          cohort_type_id: 5,
+          study_year: 2,
+          semester_number: 1,
+          type_programme_id: 4,
+          duration_years: 4
+        },
+        {
+          cohort_id: 10,
+          student_count: 18,
+          programme_id: 4,
+          cohort_type_id: 5,
+          study_year: 2,
+          semester_number: 1,
+          type_programme_id: 4,
+          duration_years: 4
+        }
+      ]
+    }),
+    { ...validSelection, cohortIds: [9, 10] }
+  )
+
+  assert.equal(result.progressions.length, 2)
+  assert.equal(result.expectedStudents, 39)
+  assert.equal(
+    result.progressions[0].cohort_type_id,
+    result.progressions[1].cohort_type_id
+  )
+})
+
 test('rejects a unit assigned to a different semester type', async () => {
   await assert.rejects(
     validateAcademicPeriod(

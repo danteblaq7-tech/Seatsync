@@ -47,7 +47,7 @@ export default function ProfileCompletionModal ({
   const [error, setError] = useState('')
   useEffect(() => {
     if (!error) return undefined
-    const timeout = setTimeout(() => setError(''), 5000)
+    const timeout = setTimeout(() => setError(''), 20000)
     return () => clearTimeout(timeout)
   }, [error])
   const { data: options = {} } = useQuery({
@@ -146,10 +146,6 @@ export default function ProfileCompletionModal ({
       ),
     [units, form.programmeIds]
   )
-  const selectedProgramme = programmes.find(
-    item => String(item.id) === String(form.programmeId)
-  )
-
   const mutation = useMutation({
     mutationFn: payload =>
       editing
@@ -626,16 +622,6 @@ export default function ProfileCompletionModal ({
                         studentCount: event.target.value
                       }))
                     }
-                  />
-                </label>
-              )}
-              {selectedProgramme && (
-                <label>
-                  Programme duration
-                  <input
-                    value={`${selectedProgramme.duration_years} years`}
-                    readOnly
-                    aria-readonly='true'
                   />
                 </label>
               )}

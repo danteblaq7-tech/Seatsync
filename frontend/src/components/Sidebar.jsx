@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { NavLink } from 'react-router-dom'
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+import { api } from '../api/client'
 import {
   faAngleDown,
   faBars,
@@ -200,7 +202,36 @@ export default function Sidebar ({
   onToggleCollapse,
   onNavSelect
 }) {
-  const userRoles = user?.roles || []
+  const userRoles = useMemo(() => user?.roles || [], [user?.roles])
+  const canReviewCohortRequests = userRoles.some(role =>
+    ['ADMIN', 'CLASS_REP'].includes(role)
+  )
+  const {
+    data: cohortRequestCounts,
+    isError: cohortRequestCountError
+  } = useQuery({
+    queryKey: ['cohort-request-counts', user?.id],
+    queryFn: async () =>
+      (await api.get('/api/academic/cohort-request-counts')).data,
+    enabled: Boolean(user?.id && canReviewCohortRequests),
+    refetchInterval: 30000
+  })
+  const {
+    data: notifications = [],
+    isError: notificationCountError
+  } = useQuery({
+    queryKey: ['notifications', user?.id],
+    queryFn: async () => {
+      const response = await api.get('/api/notifications')
+      return Array.isArray(response?.data) ? response.data : []
+    },
+    enabled: Boolean(user?.id),
+    refetchInterval: 30000
+  })
+  const unreadNotificationCount = notifications.filter(
+    notification =>
+      !(notification.isRead ?? notification.is_read ?? notification.read)
+  ).length
   const [expandedGroups, setExpandedGroups] = useState({
     Overview: true,
     Academic: true,
@@ -296,9 +327,63 @@ export default function Sidebar ({
                           onNavSelect()
                         }
                       }}
+                      title={
+                        item.to === '/cohorts'
+                          ? cohortRequestCountError
+                            ? 'Pending cohort request count unavailable'
+                            : cohortRequestCounts?.total
+                            ? `${item.label}: ${cohortRequestCounts.total} pending requests`
+                            : item.label
+                          : item.to === '/notifications'
+                          ? notificationCountError
+                            ? 'Unread notification count unavailable'
+                            : `${unreadNotificationCount} unread notifications`
+                          : item.label
+                      }
                     >
                       <FontAwesomeIcon icon={item.icon} />
                       {!collapsed && <span>{item.label}</span>}
+                      {item.to === '/cohorts' && cohortRequestCountError && (
+                        <span
+                          className='nav-count-badge'
+                          aria-label='Pending cohort request count unavailable'
+                        >
+                          !
+                        </span>
+                      )}
+                      {item.to === '/cohorts' &&
+                        !cohortRequestCountError &&
+                        Number(cohortRequestCounts?.total) > 0 && (
+                          <span
+                            className='nav-count-badge'
+                            aria-label={`${cohortRequestCounts.total} pending cohort requests`}
+                          >
+                            {cohortRequestCounts.total > 99
+                              ? '99+'
+                              : cohortRequestCounts.total}
+                          </span>
+                        )}
+                      {item.to === '/notifications' &&
+                        notificationCountError && (
+                          <span
+                            className='nav-count-badge notification-count-badge'
+                            aria-label='Unread notification count unavailable'
+                          >
+                            !
+                          </span>
+                        )}
+                      {item.to === '/notifications' &&
+                        !notificationCountError &&
+                        unreadNotificationCount > 0 && (
+                          <span
+                            className='nav-count-badge notification-count-badge'
+                            aria-label={`${unreadNotificationCount} unread notifications`}
+                          >
+                            {unreadNotificationCount > 99
+                              ? '99+'
+                              : unreadNotificationCount}
+                          </span>
+                        )}
                     </NavLink>
                   ))}
                 </div>

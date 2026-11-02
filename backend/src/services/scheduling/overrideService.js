@@ -6,6 +6,7 @@ import {
   query,
   listRows
 } from '../../repositories/sqlRepository.js'
+import { createNotification } from '../notifications/notificationService.js'
 
 export const createScheduleOverride = async ({
   timetableEntryId,
@@ -271,6 +272,36 @@ export const createScheduleOverride = async ({
   })
 
   emitSocketEvent('timetable:override_created', record)
+  emitSocketEvent('timetable:changed', {
+    action: 'makeup-class-created',
+    ids: [record.id]
+  })
+
+  const recipients = await query(
+    `SELECT DISTINCT s.user_id
+     FROM students s
+     WHERE s.status = 'ACTIVE' AND s.user_id IS NOT NULL
+       AND s.cohort_id IN (
+         SELECT tec.cohort_id FROM timetable_entry_cohorts tec
+         WHERE tec.timetable_entry_id = ?
+         UNION
+         SELECT te.cohort_id FROM timetable_entries te
+         WHERE te.id = ? AND te.cohort_id IS NOT NULL
+       )`,
+    [timetableEntryId, timetableEntryId]
+  )
+  await Promise.all(
+    recipients.map(({ user_id }) =>
+      createNotification({
+        userId: user_id,
+        type: 'schedule:makeup_created',
+        title: 'Make-up class scheduled',
+        message: `A make-up class has been scheduled for ${effectiveDate}, ${newStartTime}–${newEndTime} at ${newVenue.name}. Reason: ${reason}`,
+        entityType: 'schedule_override',
+        entityId: record.id
+      })
+    )
+  )
 
   return {
     valid: true,

@@ -8,16 +8,10 @@ import {
 import db from '../config/db.js'
 import { validateTimetableEntry } from './scheduling/conflictService.js'
 import { validateAcademicPeriod } from './academicProgressionValidation.js'
+import { getTimetableVisibility } from './timetableVisibility.js'
 
 export const listTimetableEntries = async user => {
-  const roles = Array.isArray(user?.roles) ? user.roles : []
-  const lecturerId = roles.includes('LECTURER')
-    ? (
-        await query('SELECT id FROM lecturers WHERE user_id = ? LIMIT 1', [
-          user.id
-        ])
-      )[0]?.id
-    : null
+  const visibility = getTimetableVisibility(user)
   const entries = (
     await rawQuery(
       `
@@ -38,11 +32,11 @@ export const listTimetableEntries = async user => {
     LEFT JOIN venues v ON v.id = te.venue_id
     LEFT JOIN timetable_entry_cohorts tec ON tec.timetable_entry_id = te.id
     LEFT JOIN timetable_entry_programmes tep ON tep.timetable_entry_id = te.id
-    ${lecturerId ? 'WHERE te.lecturer_id = ?' : ''}
+    ${visibility.clause}
     GROUP BY te.id
     ORDER BY te.id
   `,
-      lecturerId ? [lecturerId] : []
+      visibility.params
     )
   ).map(row => ({
     ...row,
@@ -76,11 +70,13 @@ export const listTimetableEntries = async user => {
      LEFT JOIN timetable_entry_cohorts tec ON tec.timetable_entry_id = te.id
      LEFT JOIN timetable_entry_programmes tep ON tep.timetable_entry_id = te.id
     WHERE so.status = 'APPROVED' AND so.effective_date >= CURDATE() ${
-      lecturerId ? 'AND te.lecturer_id = ?' : ''
+      visibility.clause
+        ? `AND ${visibility.clause.slice('WHERE '.length)}`
+        : ''
     }
      GROUP BY so.id
      ORDER BY so.effective_date, so.new_start_time`,
-    lecturerId ? [lecturerId] : []
+    visibility.params
   )
   return [
     ...entries,
