@@ -26,7 +26,9 @@ export const deleteExamController = async (req, res) => {
 }
 
 export const listExamsController = async (req, res) => {
-  const visibility = getExamVisibility(req.user)
+  const visibility = getExamVisibility(req.user, {
+    timetable: req.query.scope === 'timetable'
+  })
   const rows = await query(
     `
       SELECT e.*, e.unit_id AS course_id,

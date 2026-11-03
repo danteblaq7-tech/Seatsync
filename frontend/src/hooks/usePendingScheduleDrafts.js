@@ -73,17 +73,13 @@ export default function usePendingScheduleDrafts () {
   const stageDraft = useCallback(
     async (kind, payload, createdBy = null) => {
       setPublishError('')
-      try {
-        const response = await api.post('/api/schedules/drafts', {
-          kind,
-          payload,
-          createdBy
-        })
-        await queryClient.invalidateQueries({ queryKey: ['schedule-drafts'] })
-        return response?.data
-      } catch (error) {
-        throw error
-      }
+      const response = await api.post('/api/schedules/drafts', {
+        kind,
+        payload,
+        createdBy
+      })
+      await queryClient.invalidateQueries({ queryKey: ['schedule-drafts'] })
+      return response?.data
     },
     [queryClient]
   )
@@ -108,16 +104,12 @@ export default function usePendingScheduleDrafts () {
   const updateDraft = useCallback(
     async (id, payload) => {
       setPublishError('')
-      try {
-        const response = await api.put(
-          `/api/schedules/drafts/${encodeURIComponent(id)}`,
-          { payload }
-        )
-        await queryClient.invalidateQueries({ queryKey: ['schedule-drafts'] })
-        return response?.data
-      } catch (error) {
-        throw error
-      }
+      const response = await api.put(
+        `/api/schedules/drafts/${encodeURIComponent(id)}`,
+        { payload }
+      )
+      await queryClient.invalidateQueries({ queryKey: ['schedule-drafts'] })
+      return response?.data
     },
     [queryClient]
   )
@@ -152,12 +144,39 @@ export default function usePendingScheduleDrafts () {
     [drafts, queryClient]
   )
 
+  const rollbackToStaging = useCallback(
+    async items => {
+      setIsPublishing(true)
+      setPublishError('')
+      try {
+        const response = await api.post('/api/schedules/rollback', { items })
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ['schedule-drafts'] }),
+          queryClient.invalidateQueries({ queryKey: ['timetable'] }),
+          queryClient.invalidateQueries({ queryKey: ['exams'] }),
+          queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] }),
+          queryClient.invalidateQueries({ queryKey: ['venues'] })
+        ])
+        return response?.data || []
+      } catch (error) {
+        setPublishError(
+          error.message || 'Unable to roll selected items back to staging.'
+        )
+        throw error
+      } finally {
+        setIsPublishing(false)
+      }
+    },
+    [queryClient]
+  )
+
   return {
     drafts,
     stageDraft,
     removeDraft,
     updateDraft,
     publishDrafts,
+    rollbackToStaging,
     isPublishing,
     publishError
   }

@@ -1,4 +1,7 @@
-import { createScheduleOverride } from '../services/scheduling/overrideService.js'
+import {
+  cancelScheduleOverride,
+  createScheduleOverride
+} from '../services/scheduling/overrideService.js'
 import { createAuditLog } from '../services/security/securityService.js'
 
 export const createScheduleOverrideController = async (req, res) => {
@@ -26,4 +29,20 @@ export const createScheduleOverrideController = async (req, res) => {
   })
 
   return res.status(201).json({ valid: true, data: result.data })
+}
+
+export const cancelScheduleOverrideController = async (req, res) => {
+  try {
+    const data = await cancelScheduleOverride({
+      overrideId: req.params.id,
+      requesterUserId: req.user?.id,
+      requesterRoles: req.user?.roles || []
+    })
+    return res.json({ success: true, data })
+  } catch (error) {
+    return res.status(409).json({
+      success: false,
+      message: error.message || 'Unable to cancel make-up class.'
+    })
+  }
 }

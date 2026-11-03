@@ -4,6 +4,7 @@ import {
   deleteScheduleDraftController,
   listScheduleDraftsController,
   publishScheduleDraftsController,
+  rollbackScheduleItemsController,
   updateScheduleDraftController,
   validateScheduleDraftController
 } from '../controllers/schedulePublishController.js'
@@ -40,6 +41,11 @@ router.post(
   '/publish',
   requireRole('ADMIN', 'LECTURER'),
   publishScheduleDraftsController
+)
+router.post(
+  '/rollback',
+  requireRole('ADMIN'),
+  rollbackScheduleItemsController
 )
 
 export default router

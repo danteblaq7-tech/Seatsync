@@ -28,11 +28,24 @@ const weekdayForDate = date => {
   ]
 }
 
+const examGroups = payload => {
+  if (Array.isArray(payload?.unit_groups)) return payload.unit_groups
+  return [
+    {
+      course_id: get(payload, 'course_id', 'courseId'),
+      cohort_allocations: payload?.cohort_allocations || [],
+      venue_allocations: payload?.venue_allocations || []
+    }
+  ]
+}
+
 const toSchedule = draft => {
   const payload = draft?.payload || {}
   const isExam = draft?.kind === 'exam' || draft?.kind === 'exam_update'
+  const groups = isExam ? examGroups(payload) : []
   const cohorts = isExam
-    ? (payload.cohort_allocations || [])
+    ? groups
+        .flatMap(group => group.cohort_allocations || [])
         .map(item => Number(get(item, 'cohort_id', 'cohortId')))
         .filter(Boolean)
     : ids(
@@ -40,7 +53,8 @@ const toSchedule = draft => {
           get(payload, 'cohort_id', 'cohortId')
       )
   const venues = isExam
-    ? (payload.venue_allocations || [])
+    ? groups
+        .flatMap(group => group.venue_allocations || [])
         .map(item => Number(get(item, 'venue_id', 'venueId')))
         .filter(Boolean)
     : [Number(get(payload, 'venue_id', 'venueId'))].filter(Boolean)
@@ -63,7 +77,15 @@ const toSchedule = draft => {
           .toUpperCase(),
     start: String(get(payload, 'start_time', 'startTime') || '').slice(0, 5),
     end: String(get(payload, 'end_time', 'endTime') || '').slice(0, 5),
-    courseId: Number(get(payload, 'course_id', 'courseId')) || null,
+    courseIds: isExam
+      ? groups
+          .map(group =>
+            Number(get(group, 'course_id', 'courseId')) || null
+          )
+          .filter(Boolean)
+      : [Number(get(payload, 'course_id', 'courseId')) || null],
+    sittingGroupId:
+      payload.sitting_group_id ?? payload.sittingGroupId ?? null,
     lecturerId: isExam
       ? null
       : Number(get(payload, 'lecturer_id', 'lecturerId')) || null,
@@ -112,8 +134,9 @@ export const assertNoStagedDraftConflict = (candidate, otherDrafts = []) => {
 
     if (next.isExam && other.isExam) {
       if (next.date !== other.date || !overlaps(next, other)) continue
-      if (next.courseId && next.courseId === other.courseId) {
-        const unitName = resourceName(candidate.payload, 'unit', next.courseId)
+      const courseId = shared(next.courseIds, other.courseIds)
+      if (courseId) {
+        const unitName = resourceName(candidate.payload, 'unit', courseId)
         throw new Error(
           `Staged exam conflict: ${unitName} has overlapping exams on ${next.date}, ${next.start}–${next.end} and ${other.start}–${other.end} (draft ${other.id}).`
         )
@@ -126,7 +149,10 @@ export const assertNoStagedDraftConflict = (candidate, otherDrafts = []) => {
         )
       }
       const venueId = shared(next.venues, other.venues)
-      if (venueId) {
+      const sameSittingGroup =
+        next.sittingGroupId &&
+        next.sittingGroupId === other.sittingGroupId
+      if (venueId && !sameSittingGroup) {
         const venueName = resourceName(candidate.payload, 'venue', venueId)
         throw new Error(
           `Staged exam conflict: ${venueName} is allocated to overlapping exams on ${next.date}, ${next.start}–${next.end} and ${other.start}–${other.end} (draft ${other.id}).`

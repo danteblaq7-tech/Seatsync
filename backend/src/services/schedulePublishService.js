@@ -1,6 +1,12 @@
+import { randomUUID } from 'node:crypto'
 import db from '../config/db.js'
 import { assertNoStagedDraftConflict } from './scheduleDraftConflict.js'
 import { validateAcademicPeriod } from './academicProgressionValidation.js'
+import {
+  getExamSittingGroupId,
+  getExamUnitGroups,
+  validateExamSittingCapacity
+} from './exams/examSitting.js'
 
 const run = async (connection, sql, params = []) => {
   const [rows] = await connection.execute(sql, params)
@@ -198,6 +204,7 @@ const assertNoExamConflict = async (
   const start = get(exam, 'start_time', 'startTime')
   const end = get(exam, 'end_time', 'endTime')
   const courseId = Number(exam?.unit_id ?? get(exam, 'course_id', 'courseId'))
+  const sittingGroupId = getExamSittingGroupId(exam)
   const excludeExamParams = excludeExamId ? [Number(excludeExamId)] : []
   if (
     !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
@@ -310,6 +317,26 @@ const assertNoExamConflict = async (
     }
   }
 
+  if (uniqueCohortIds.length) {
+    const [makeupCohortRows] = await connection.execute(
+      `SELECT te.id FROM schedule_overrides so
+       JOIN timetable_entries te ON te.id = so.timetable_entry_id
+       LEFT JOIN timetable_entry_cohorts tec
+         ON tec.timetable_entry_id = te.id
+       WHERE so.status = 'APPROVED' AND so.effective_date = ?
+         AND so.new_start_time < ? AND so.new_end_time > ?
+         AND (te.cohort_id IN (${uniqueCohortIds.map(() => '?').join(',')})
+           OR tec.cohort_id IN (${uniqueCohortIds.map(() => '?').join(',')}))
+       LIMIT 1`,
+      [date, end, start, ...uniqueCohortIds, ...uniqueCohortIds]
+    )
+    if (makeupCohortRows.length) {
+      throw new Error(
+        'A selected cohort has a make-up class during this exam.'
+      )
+    }
+  }
+
   for (const allocation of venueAllocations) {
     const venueId = Number(get(allocation, 'venue_id', 'venueId'))
     const examRows = await run(
@@ -319,8 +346,18 @@ const assertNoExamConflict = async (
       JOIN venues v ON v.id = eva.venue_id
       WHERE e.status = 'SCHEDULED' AND eva.venue_id = ? AND e.exam_date = ?
         AND e.start_time < ? AND e.end_time > ?
+        AND (? IS NULL OR e.sitting_group_id IS NULL
+          OR e.sitting_group_id <> ?)
         ${excludeExamId ? 'AND e.id <> ?' : ''} LIMIT 1`,
-      [venueId, date, end, start, ...excludeExamParams]
+      [
+        venueId,
+        date,
+        end,
+        start,
+        sittingGroupId,
+        sittingGroupId,
+        ...excludeExamParams
+      ]
     )
     if (examRows.length) {
       const conflict = examRows[0]
@@ -330,6 +367,18 @@ const assertNoExamConflict = async (
         } already has exam #${conflict.id} on ${date}, ${String(
           conflict.start_time
         ).slice(0, 5)}–${String(conflict.end_time).slice(0, 5)}.`
+      )
+    }
+    const [makeupVenueRows] = await connection.execute(
+      `SELECT id FROM schedule_overrides
+       WHERE status = 'APPROVED' AND effective_date = ?
+         AND new_venue_id = ? AND new_start_time < ? AND new_end_time > ?
+       LIMIT 1`,
+      [date, venueId, end, start]
+    )
+    if (makeupVenueRows.length) {
+      throw new Error(
+        `Venue ${venueId} is already assigned to a make-up class during this exam.`
       )
     }
     const venue = (
@@ -355,6 +404,81 @@ const assertNoExamConflict = async (
       )
     }
   }
+}
+
+const validateExamUnitGroups = async (
+  connection,
+  payload,
+  excludeExamId = null
+) => {
+  const groups = getExamUnitGroups(payload)
+  if (!groups.length) {
+    throw new Error('Add at least one unit group to the exam sitting.')
+  }
+  const selectedUnits = new Set()
+  const selectedCohorts = new Set()
+
+  for (const group of groups) {
+    const courseId = Number(get(group, 'course_id', 'courseId'))
+    const cohortAllocations = group.cohort_allocations || []
+    const venueAllocations = group.venue_allocations || []
+    const cohortIds = cohortAllocations
+      .map(item => Number(get(item, 'cohort_id', 'cohortId')))
+      .filter(Boolean)
+
+    if (!courseId || !cohortIds.length || !venueAllocations.length) {
+      throw new Error(
+        'Each unit group needs a unit, at least one cohort, and a venue allocation.'
+      )
+    }
+    if (selectedUnits.has(courseId)) {
+      throw new Error('Each unit can only be added once to an exam sitting.')
+    }
+    selectedUnits.add(courseId)
+    for (const cohortId of cohortIds) {
+      if (selectedCohorts.has(cohortId)) {
+        throw new Error(
+          'A cohort can only be assigned to one unit in an exam sitting.'
+        )
+      }
+      selectedCohorts.add(cohortId)
+    }
+
+    await assertNoExamConflict(
+      connection,
+      {
+        ...payload,
+        ...group,
+        course_id: courseId,
+        sitting_group_id: getExamSittingGroupId(payload)
+      },
+      cohortIds,
+      venueAllocations,
+      excludeExamId
+    )
+  }
+  const sittingGroupId = getExamSittingGroupId(payload)
+  let capacityGroups = groups
+  if (sittingGroupId) {
+    const siblingVenueAllocations = await run(
+      connection,
+      `SELECT eva.venue_id, eva.allocated_capacity, eva.student_count
+       FROM exams e
+       JOIN exam_venue_allocations eva ON eva.exam_id = e.id
+       WHERE e.status = 'SCHEDULED' AND e.sitting_group_id = ?
+         ${excludeExamId ? 'AND e.id <> ?' : ''}`,
+      [
+        sittingGroupId,
+        ...(excludeExamId ? [Number(excludeExamId)] : [])
+      ]
+    )
+    capacityGroups = [
+      ...groups,
+      { venue_allocations: siblingVenueAllocations }
+    ]
+  }
+  await validateExamSittingCapacity(connection, capacityGroups)
+  return groups
 }
 
 export const validateScheduleDraft = async (draft, pendingDrafts, actor) => {
@@ -436,17 +560,7 @@ export const validateScheduleDraft = async (draft, pendingDrafts, actor) => {
         if (!rows.length)
           throw new Error('The scheduled exam no longer exists.')
       }
-      const cohortAllocations = payload.cohort_allocations || []
-      const venueAllocations = payload.venue_allocations || []
-      const cohortIds = cohortAllocations
-        .map(item => Number(get(item, 'cohort_id', 'cohortId')))
-        .filter(Boolean)
-      if (!cohortIds.length || !venueAllocations.length) {
-        throw new Error(
-          'Each exam needs at least one cohort and venue allocation.'
-        )
-      }
-      const [academicRows, semesterRows, unitRows] = await Promise.all([
+      const [academicRows, semesterRows] = await Promise.all([
         run(connection, 'SELECT id FROM academic_years WHERE id = ?', [
           Number(get(payload, 'academic_year_id', 'academicYearId'))
         ]),
@@ -457,34 +571,14 @@ export const validateScheduleDraft = async (draft, pendingDrafts, actor) => {
             Number(get(payload, 'semester_id', 'semesterId')),
             Number(get(payload, 'academic_year_id', 'academicYearId'))
           ]
-        ),
-        run(connection, 'SELECT id FROM units WHERE id = ?', [
-          Number(get(payload, 'course_id', 'courseId'))
-        ])
+        )
       ])
-      if (!academicRows.length || !semesterRows.length || !unitRows.length) {
+      if (!academicRows.length || !semesterRows.length) {
         throw new Error('The exam academic year, semester, or unit is invalid.')
       }
-      const cohortStudents = cohortAllocations.reduce(
-        (total, item) =>
-          total + Number(get(item, 'student_count', 'studentCount') || 0),
-        0
-      )
-      const venueStudents = venueAllocations.reduce(
-        (total, item) =>
-          total + Number(get(item, 'student_count', 'studentCount') || 0),
-        0
-      )
-      if (venueStudents < cohortStudents) {
-        throw new Error(
-          `Venue allocations cover ${venueStudents} students, but the selected cohorts contain ${cohortStudents}.`
-        )
-      }
-      await assertNoExamConflict(
+      await validateExamUnitGroups(
         connection,
         payload,
-        cohortIds,
-        venueAllocations,
         draft.kind === 'exam_update' ? examId : null
       )
     }
@@ -727,10 +821,54 @@ export const publishScheduleDrafts = async (draftReferences, actor) => {
           academic_year_id: academicYearId,
           semester_id: semesterId,
           course_id: courseId,
+          sitting_group_id:
+            getExamSittingGroupId(payload) || existingRows[0].sitting_group_id,
           exam_date: examDate,
           start_time: examStart,
           end_time: examEnd,
           duration_minutes: durationMinutes
+        }
+        if (nextExam.sitting_group_id) {
+          const siblings = await run(
+            connection,
+            `SELECT id, academic_year_id, semester_id,
+                    DATE_FORMAT(exam_date, '%Y-%m-%d') AS exam_date,
+                    start_time, end_time
+             FROM exams
+             WHERE sitting_group_id = ? AND id <> ?`,
+            [nextExam.sitting_group_id, examId]
+          )
+          if (
+            siblings.some(
+              sibling =>
+                Number(sibling.academic_year_id) !== academicYearId ||
+                Number(sibling.semester_id) !== semesterId ||
+                String(sibling.exam_date).slice(0, 10) !== examDate ||
+                String(sibling.start_time).slice(0, 5) !==
+                  String(examStart).slice(0, 5) ||
+                String(sibling.end_time).slice(0, 5) !==
+                  String(examEnd).slice(0, 5)
+            )
+          ) {
+            throw new Error(
+              'Unit groups in one sitting must share the same academic period, date, and time.'
+            )
+          }
+          const [siblingCohorts] = await connection.execute(
+            `SELECT ec.cohort_id FROM exams e
+             JOIN exam_cohorts ec ON ec.exam_id = e.id
+             WHERE e.sitting_group_id = ? AND e.id <> ?`,
+            [nextExam.sitting_group_id, examId]
+          )
+          if (
+            siblingCohorts.some(row =>
+              cohortIds.includes(Number(row.cohort_id))
+            )
+          ) {
+            throw new Error(
+              'A cohort can only be assigned to one unit in an exam sitting.'
+            )
+          }
         }
         await assertNoExamConflict(
           connection,
@@ -739,6 +877,20 @@ export const publishScheduleDrafts = async (draftReferences, actor) => {
           venueAllocations,
           examId
         )
+        if (nextExam.sitting_group_id) {
+          const siblingVenueAllocations = await run(
+            connection,
+            `SELECT eva.venue_id, eva.allocated_capacity, eva.student_count
+             FROM exams e
+             JOIN exam_venue_allocations eva ON eva.exam_id = e.id
+             WHERE e.sitting_group_id = ? AND e.id <> ?`,
+            [nextExam.sitting_group_id, examId]
+          )
+          await validateExamSittingCapacity(connection, [
+            { venue_allocations: siblingVenueAllocations },
+            { venue_allocations: venueAllocations }
+          ])
+        }
         const [beforeCohorts] = await connection.execute(
           'SELECT cohort_id, student_count FROM exam_cohorts WHERE exam_id = ?',
           [examId]
@@ -932,8 +1084,6 @@ export const publishScheduleDrafts = async (draftReferences, actor) => {
       } else if (draft.kind === 'exam') {
         if (!(actor?.roles || []).includes('ADMIN'))
           throw new Error('Only administrators may publish exams.')
-        const cohortAllocations = payload.cohort_allocations || []
-        const venueAllocations = payload.venue_allocations || []
         const examDate = String(
           get(payload, 'exam_date', 'examDate') || ''
         ).slice(0, 10)
@@ -968,7 +1118,7 @@ export const publishScheduleDrafts = async (draftReferences, actor) => {
             )
           }
         }
-        const [academicRows, semesterRows, unitRows] = await Promise.all([
+        const [academicRows, semesterRows] = await Promise.all([
           run(connection, 'SELECT id FROM academic_years WHERE id = ?', [
             Number(get(payload, 'academic_year_id', 'academicYearId'))
           ]),
@@ -980,94 +1130,79 @@ export const publishScheduleDrafts = async (draftReferences, actor) => {
               Number(get(payload, 'academic_year_id', 'academicYearId'))
             ]
           ),
-          run(connection, 'SELECT id FROM units WHERE id = ?', [
-            Number(get(payload, 'course_id', 'courseId'))
-          ])
         ])
-        if (!academicRows.length || !semesterRows.length || !unitRows.length)
+        if (!academicRows.length || !semesterRows.length)
           throw new Error(
             'The exam academic year, semester, or unit is invalid.'
           )
-        const cohortIds = cohortAllocations
-          .map(item => Number(get(item, 'cohort_id', 'cohortId')))
-          .filter(Boolean)
-        if (!cohortIds.length || !venueAllocations.length)
-          throw new Error(
-            'Each exam needs at least one cohort and venue allocation.'
-          )
-        const cohortStudentTotal = cohortAllocations.reduce(
-          (total, item) =>
-            total + Number(get(item, 'student_count', 'studentCount') || 0),
-          0
-        )
-        const venueStudentTotal = venueAllocations.reduce(
-          (total, item) =>
-            total + Number(get(item, 'student_count', 'studentCount') || 0),
-          0
-        )
-        if (venueStudentTotal < cohortStudentTotal) {
-          throw new Error(
-            `Venue allocations cover ${venueStudentTotal} students, but the selected cohorts contain ${cohortStudentTotal}.`
-          )
-        }
-        await assertNoExamConflict(
-          connection,
-          payload,
-          cohortIds,
-          venueAllocations
-        )
-        const [result] = await connection.execute(
-          `INSERT INTO exams
-          (academic_year_id, semester_id, unit_id, exam_date, start_time, end_time,
-           duration_minutes, status, instructions, created_by, updated_by)
-          VALUES (?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?, ?, ?)`,
-          [
-            Number(get(payload, 'academic_year_id', 'academicYearId')),
-            Number(get(payload, 'semester_id', 'semesterId')),
-            Number(get(payload, 'course_id', 'courseId')),
-            String(get(payload, 'exam_date', 'examDate')).slice(0, 10),
-            get(payload, 'start_time', 'startTime'),
-            get(payload, 'end_time', 'endTime'),
-            Number(get(payload, 'duration_minutes', 'durationMinutes')),
-            payload.instructions || '',
-            actor.id,
-            actor.id
-          ]
-        )
-        const examId = result.insertId
-        for (const item of cohortAllocations) {
-          const count = Number(get(item, 'student_count', 'studentCount'))
-          if (count < 1)
-            throw new Error(
-              'Each exam cohort allocation must include at least one student.'
-            )
-          await connection.execute(
-            'INSERT INTO exam_cohorts (exam_id, cohort_id, student_count) VALUES (?, ?, ?)',
-            [examId, Number(get(item, 'cohort_id', 'cohortId')), count]
-          )
-        }
-        for (const item of venueAllocations) {
-          await connection.execute(
-            'INSERT INTO exam_venue_allocations (exam_id, venue_id, allocated_capacity, student_count) VALUES (?, ?, ?, ?)',
+        const groups = await validateExamUnitGroups(connection, payload)
+        const sittingGroupId =
+          groups.length > 1
+            ? getExamSittingGroupId(payload) || randomUUID()
+            : getExamSittingGroupId(payload)
+
+        for (const group of groups) {
+          const unitId = Number(get(group, 'course_id', 'courseId'))
+          const [result] = await connection.execute(
+            `INSERT INTO exams
+            (academic_year_id, semester_id, unit_id, exam_date, start_time, end_time,
+             duration_minutes, status, instructions, sitting_group_id, created_by, updated_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?, ?, ?, ?)`,
             [
+              Number(get(payload, 'academic_year_id', 'academicYearId')),
+              Number(get(payload, 'semester_id', 'semesterId')),
+              unitId,
+              examDate,
+              examStart,
+              examEnd,
+              Number(get(payload, 'duration_minutes', 'durationMinutes')),
+              payload.instructions || '',
+              sittingGroupId,
+              actor.id,
+              actor.id
+            ]
+          )
+          const examId = result.insertId
+          for (const item of group.cohort_allocations || []) {
+            await connection.execute(
+              'INSERT INTO exam_cohorts (exam_id, cohort_id, student_count) VALUES (?, ?, ?)',
+              [
+                examId,
+                Number(get(item, 'cohort_id', 'cohortId')),
+                Number(get(item, 'student_count', 'studentCount'))
+              ]
+            )
+          }
+          for (const item of group.venue_allocations || []) {
+            await connection.execute(
+              'INSERT INTO exam_venue_allocations (exam_id, venue_id, allocated_capacity, student_count) VALUES (?, ?, ?, ?)',
+              [
+                examId,
+                Number(get(item, 'venue_id', 'venueId')),
+                Number(get(item, 'allocated_capacity', 'allocatedCapacity')),
+                Number(get(item, 'student_count', 'studentCount'))
+              ]
+            )
+          }
+          published.push({ kind: draft.kind, id: examId })
+          await connection.execute(
+            `INSERT INTO audit_logs
+            (user_id, action, entity_type, entity_id, new_values)
+            VALUES (?, 'PUBLISH_SCHEDULE_ITEM', 'exam', ?, ?)`,
+            [
+              actor.id,
               examId,
-              Number(get(item, 'venue_id', 'venueId')),
-              Number(get(item, 'allocated_capacity', 'allocatedCapacity')),
-              Number(get(item, 'student_count', 'studentCount'))
+              JSON.stringify({
+                ...payload,
+                course_id: unitId,
+                cohort_allocations: group.cohort_allocations,
+                venue_allocations: group.venue_allocations,
+                sitting_group_id: sittingGroupId,
+                status: 'SCHEDULED'
+              })
             ]
           )
         }
-        published.push({ kind: draft.kind, id: examId })
-        await connection.execute(
-          `INSERT INTO audit_logs
-          (user_id, action, entity_type, entity_id, new_values)
-          VALUES (?, 'PUBLISH_SCHEDULE_ITEM', 'exam', ?, ?)`,
-          [
-            actor.id,
-            examId,
-            JSON.stringify({ ...payload, status: 'SCHEDULED' })
-          ]
-        )
       } else {
         throw new Error('Unknown pending schedule item type.')
       }

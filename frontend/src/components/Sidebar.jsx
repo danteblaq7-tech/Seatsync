@@ -399,12 +399,6 @@ export default function Sidebar ({
       </nav>
 
       <div className='sidebar-footer'>
-        {!collapsed && (
-          <div className='profile-pill'>
-            <strong>{user?.firstName || 'User'}</strong>
-            <span>{(userRoles || []).join(', ') || 'Member'}</span>
-          </div>
-        )}
         <button type='button' className='logout-button' onClick={onLogout}>
           <FontAwesomeIcon icon={faRightFromBracket} />
           {!collapsed && 'Logout'}

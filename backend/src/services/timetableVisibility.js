@@ -57,12 +57,42 @@ export const getTimetableVisibility = user => {
   }
 }
 
-export const getExamVisibility = user => {
+export const getExamVisibility = (user, { timetable = false } = {}) => {
   const roles = Array.isArray(user?.roles) ? user.roles : []
   if (roles.includes('ADMIN')) return { clause: '', params: [] }
+  if (roles.includes('CLASS_REP') && !timetable) {
+    return { clause: '', params: [] }
+  }
 
   const conditions = []
   const params = []
+  if (timetable && roles.includes('STUDENT')) {
+    conditions.push(
+      `EXISTS (
+        SELECT 1 FROM exam_cohorts evc
+        JOIN students evs ON evs.cohort_id = evc.cohort_id
+        WHERE evc.exam_id = e.id AND evs.user_id = ?
+          AND evs.status = 'ACTIVE'
+      )`
+    )
+    params.push(Number(user.id))
+  }
+  if (timetable && roles.includes('CLASS_REP')) {
+    conditions.push(
+      `EXISTS (
+        SELECT 1 FROM exam_cohorts evc
+        JOIN cohort_representatives evcr
+          ON evcr.cohort_id = evc.cohort_id AND evcr.is_active = TRUE
+         AND (evcr.end_date IS NULL OR evcr.end_date >= CURDATE())
+        JOIN students evrs ON evrs.id = evcr.student_id
+        WHERE evc.exam_id = e.id AND evrs.user_id = ?
+      )`
+    )
+    params.push(Number(user.id))
+  }
+  if (timetable && conditions.length) {
+    return { clause: `AND (${conditions.join(' OR ')})`, params }
+  }
   if (roles.includes('LECTURER')) {
     conditions.push(
       `EXISTS (
@@ -97,20 +127,6 @@ export const getExamVisibility = user => {
     )
     params.push(Number(user.id))
   }
-  if (roles.includes('CLASS_REP')) {
-    conditions.push(
-      `EXISTS (
-        SELECT 1 FROM exam_cohorts evc
-        JOIN cohort_representatives evcr ON evcr.cohort_id = evc.cohort_id
-        JOIN students evrs ON evrs.id = evcr.student_id
-        WHERE evc.exam_id = e.id AND evrs.user_id = ?
-          AND evcr.is_active = TRUE
-          AND (evcr.end_date IS NULL OR evcr.end_date >= CURDATE())
-      )`
-    )
-    params.push(Number(user.id))
-  }
-
   return {
     clause: conditions.length
       ? `AND (${conditions.join(' OR ')})`

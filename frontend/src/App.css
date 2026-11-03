@@ -191,21 +191,6 @@ button {
   gap: 12px;
 }
 
-.profile-pill {
-  background: rgba(148, 163, 184, 0.14);
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 12px;
-  padding: 12px 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.profile-pill span {
-  color: #cbd5e1;
-  font-size: 12px;
-}
-
 .logout-button {
   border: none;
   background: rgba(239, 68, 68, 0.12);
@@ -1711,8 +1696,7 @@ button {
   }
 
   .sidebar.collapsed .brand-copy,
-  .sidebar.collapsed .nav-item span,
-  .sidebar.collapsed .profile-pill {
+  .sidebar.collapsed .nav-item span {
     display: initial;
   }
 
@@ -1977,7 +1961,17 @@ button {
 .cohort-table-panel .academic-records-scroll,
 .cohort-request-review .academic-records-scroll,
 .cohort-members-section .academic-records-scroll {
+  max-height: min(38vh, 360px);
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 4px 2px 8px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.cohort-request-review .academic-records-scroll::-webkit-scrollbar,
+.cohort-members-section .academic-records-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .cohort-requests-panel .academic-records-scroll table,

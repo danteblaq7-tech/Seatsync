@@ -45,16 +45,32 @@ test('unsupported roles do not receive timetable events', () => {
   })
 })
 
-test('students and class representatives see only exams for their cohorts', () => {
+test('students see only exams for their active cohort', () => {
   const studentScope = getExamVisibility({ id: 21, roles: ['STUDENT'] })
-  const repScope = getExamVisibility({ id: 22, roles: ['CLASS_REP'] })
 
   assert.match(studentScope.clause, /exam_cohorts/)
+  assert.match(studentScope.clause, /evc\.exam_id = e\.id/)
   assert.match(studentScope.clause, /evs\.status = 'ACTIVE'/)
   assert.deepEqual(studentScope.params, [21])
-  assert.match(repScope.clause, /cohort_representatives/)
-  assert.match(repScope.clause, /evcr\.is_active = TRUE/)
-  assert.deepEqual(repScope.params, [22])
+})
+
+test('student class reps see only their cohort exams on the timetable', () => {
+  const timetableScope = getExamVisibility(
+    { id: 21, roles: ['STUDENT', 'CLASS_REP'] },
+    { timetable: true }
+  )
+
+  assert.match(timetableScope.clause, /evc\.exam_id = e\.id/)
+  assert.match(timetableScope.clause, /evs\.user_id = \?/)
+  assert.match(timetableScope.clause, /cohort_representatives/)
+  assert.deepEqual(timetableScope.params, [21, 21])
+})
+
+test('class representatives can view all exams without admin actions', () => {
+  assert.deepEqual(getExamVisibility({ id: 22, roles: ['CLASS_REP'] }), {
+    clause: '',
+    params: []
+  })
 })
 
 test('admins can see all exams', () => {
