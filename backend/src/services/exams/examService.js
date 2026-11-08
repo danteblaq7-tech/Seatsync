@@ -5,6 +5,7 @@ import {
   query
 } from '../../repositories/sqlRepository.js'
 import db from '../../config/db.js'
+import { validateAcademicPeriod } from '../academicProgressionValidation.js'
 
 const toMinutes = value => {
   if (!value) return 0
@@ -131,9 +132,58 @@ export const createExam = async payload => {
   const cohortAllocations = Array.isArray(payload.cohort_allocations)
     ? payload.cohort_allocations
     : []
+  const cohortIds = cohortAllocations
+    .map(allocation => Number(allocation.cohortId ?? allocation.cohort_id))
+    .filter(Boolean)
+  if (!cohortIds.length) {
+    return {
+      valid: false,
+      conflicts: [
+        {
+          type: 'VALIDATION_ERROR',
+          message: 'Select at least one cohort with an academic progression.'
+        }
+      ]
+    }
+  }
+  const validationConnection = await db.getConnection()
+  let academicValidation
+  try {
+    academicValidation = await validateAcademicPeriod(validationConnection, {
+      academicYearId,
+      semesterId,
+      unitId: courseId,
+      programmeIds: payload.programme_ids ?? payload.programmeIds ?? [],
+      cohortIds,
+      examDate
+    })
+  } finally {
+    validationConnection.release()
+  }
+  const progressionCounts = new Map(
+    academicValidation.progressions.map(item => [
+      Number(item.cohort_id),
+      Number(item.student_count)
+    ])
+  )
   for (const allocation of cohortAllocations) {
     const cohortId = Number(allocation.cohortId ?? allocation.cohort_id)
     if (!cohortId) continue
+    if (
+      Number(allocation.studentCount ?? allocation.student_count) !==
+      progressionCounts.get(cohortId)
+    ) {
+      return {
+        valid: false,
+        conflicts: [
+          {
+            type: 'VALIDATION_ERROR',
+            message:
+              'Exam cohort counts must match the selected academic progression.'
+          }
+        ]
+      }
+    }
     const cohort = await findById('cohorts', cohortId)
     const existing = await query(
       `SELECT e.start_time, e.end_time
@@ -166,19 +216,81 @@ export const createExam = async payload => {
   const venueAllocations = Array.isArray(payload.venue_allocations)
     ? payload.venue_allocations
     : []
+  if (!venueAllocations.length) {
+    return {
+      valid: false,
+      conflicts: [
+        {
+          type: 'VALIDATION_ERROR',
+          message: 'Select at least one venue allocation for the exam.'
+        }
+      ]
+    }
+  }
+  if (
+    cohortAllocations.some(
+      allocation =>
+        Number(allocation.studentCount ?? allocation.student_count) < 1
+    )
+  ) {
+    return {
+      valid: false,
+      conflicts: [
+        {
+          type: 'VALIDATION_ERROR',
+          message: 'Each exam cohort must have a positive student count.'
+        }
+      ]
+    }
+  }
+  const expectedStudents = academicValidation.expectedStudents
+  const allocatedStudents = venueAllocations.reduce(
+    (total, allocation) =>
+      total +
+      Number(
+        allocation.studentCount ??
+          allocation.student_count ??
+          allocation.allocatedCapacity ??
+          allocation.allocated_capacity ??
+          0
+      ),
+    0
+  )
+  if (allocatedStudents < expectedStudents) {
+    return {
+      valid: false,
+      conflicts: [
+        {
+          type: 'VALIDATION_ERROR',
+          message: `Venue allocations cover ${allocatedStudents} students, but the selected cohorts contain ${expectedStudents}.`
+        }
+      ]
+    }
+  }
   for (const allocation of venueAllocations) {
     const venueId = Number(allocation.venueId ?? allocation.venue_id)
     const venue = await findById('venues', venueId)
     const allocatedCapacity = Number(
       allocation.allocatedCapacity ?? allocation.allocated_capacity
     )
-    if (venue && allocatedCapacity > Number(venue.capacity)) {
+    const studentCount = Number(
+      allocation.studentCount ?? allocation.student_count ?? allocatedCapacity
+    )
+    if (
+      !venue ||
+      allocatedCapacity < 1 ||
+      allocatedCapacity > Number(venue.capacity) ||
+      studentCount < 1 ||
+      studentCount > allocatedCapacity
+    ) {
       return {
         valid: false,
         conflicts: [
           {
             type: 'VENUE_CAPACITY_EXCEEDED',
-            message: `${venue.name} cannot allocate more than ${venue.capacity} students.`
+            message: venue
+              ? `The allocation for ${venue.name} is invalid or exceeds its capacity.`
+              : 'The selected venue is not available.'
           }
         ]
       }
@@ -333,6 +445,33 @@ export const updateExam = async (id, payload) => {
     const cohortIds = cohortAllocations
       .map(item => Number(item.cohortId ?? item.cohort_id))
       .filter(Boolean)
+    const academicValidation = await validateAcademicPeriod(connection, {
+      academicYearId,
+      semesterId,
+      unitId: courseId,
+      programmeIds: payload.programme_ids ?? payload.programmeIds ?? [],
+      cohortIds,
+      examDate: date
+    })
+    const progressionCounts = new Map(
+      academicValidation.progressions.map(item => [
+        Number(item.cohort_id),
+        Number(item.student_count)
+      ])
+    )
+    if (
+      cohortAllocations.some(
+        allocation =>
+          Number(allocation.studentCount ?? allocation.student_count) !==
+          progressionCounts.get(
+            Number(allocation.cohortId ?? allocation.cohort_id)
+          )
+      )
+    ) {
+      throw new Error(
+        'Exam cohort counts must match the selected academic progression.'
+      )
+    }
     const venueIds = venueAllocations
       .map(item => Number(item.venueId ?? item.venue_id))
       .filter(Boolean)
@@ -348,12 +487,7 @@ export const updateExam = async (id, payload) => {
     ) {
       throw new Error('Each venue can only be added once to an exam.')
     }
-    const cohortStudentTotal = cohortAllocations.reduce(
-      (total, allocation) =>
-        total +
-        Number(allocation.studentCount ?? allocation.student_count ?? 0),
-      0
-    )
+    const cohortStudentTotal = academicValidation.expectedStudents
     const venueStudentTotal = venueAllocations.reduce(
       (total, allocation) =>
         total +

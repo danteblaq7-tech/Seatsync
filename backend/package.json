@@ -17,6 +17,8 @@
     "migrate:lecturer-units": "node src/database/lecturerUnitsMigration.js",
     "migrate:schedule-drafts": "node src/database/scheduleDraftsMigration.js",
     "migrate:unit-id-columns": "node src/database/renameCourseIdToUnitIdMigration.js",
+    "migrate:academic-progression": "node src/database/academicProgressionMigration.js",
+    "migrate:cohort-membership": "node src/database/cohortMembershipMigration.js",
     "migrate:exam-type": "node src/database/removeExamType.js",
     "test": "node --test"
   },

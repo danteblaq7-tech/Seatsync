@@ -3,20 +3,47 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 
-export default function ProfileCompletionModal ({ role }) {
+const EMPTY_LIST = []
+
+const createAcademicForm = profile => ({
+  facultyIds: [],
+  departmentIds: [],
+  programmeIds: [],
+  unitIds: [],
+  cohortTypeIds: [],
+  facultyId: String(profile?.facultyId ?? profile?.faculty_id ?? ''),
+  departmentId: String(profile?.departmentId ?? profile?.department_id ?? ''),
+  programmeId: String(profile?.programmeId ?? profile?.programme_id ?? ''),
+  academicYearId: String(
+    profile?.academicYearId ?? profile?.academic_year_id ?? ''
+  ),
+  intakeYear: String(profile?.intakeYear ?? profile?.intake_year ?? ''),
+  cohortTypeId: String(profile?.cohortTypeId ?? profile?.cohort_type_id ?? ''),
+  studentCount: String(
+    profile?.studentCount ??
+      profile?.student_count ??
+      profile?.cohort_student_count ??
+      ''
+  )
+})
+
+export default function ProfileCompletionModal ({
+  role,
+  variant = 'modal',
+  initialProfile,
+  editing = false,
+  lockCohortIdentity = false,
+  onCancel,
+  onSaved
+}) {
   const queryClient = useQueryClient()
   const { logout } = useAuth()
   const [departmentSearch, setDepartmentSearch] = useState('')
   const [programmeSearch, setProgrammeSearch] = useState('')
-  const [form, setForm] = useState({
-    facultyIds: [],
-    departmentIds: [],
-    programmeIds: [],
-    unitIds: [],
-    programmeId: '',
-    academicYearId: '',
-    currentYear: '1'
-  })
+  const [formState, setFormState] = useState(() =>
+    initialProfile ? createAcademicForm(initialProfile) : null
+  )
+  const isLecturer = role === 'LECTURER'
   const [error, setError] = useState('')
   useEffect(() => {
     if (!error) return undefined
@@ -28,9 +55,60 @@ export default function ProfileCompletionModal ({ role }) {
     queryFn: async () =>
       (await api.get('/api/auth/registration-options')).data || {}
   })
-  const departments = options.departments || []
-  const programmes = options.programmes || []
-  const units = options.units || []
+  const { data: savedProfileResponse } = useQuery({
+    queryKey: ['student-academic-profile', 'profile-modal'],
+    queryFn: async () => (await api.get('/api/auth/student-profile')).data,
+    enabled: !isLecturer && !initialProfile
+  })
+  const savedProfile =
+    savedProfileResponse?.cohortProfileRequest ||
+    savedProfileResponse?.membershipRequest ||
+    savedProfileResponse?.student
+  const form = formState || createAcademicForm(initialProfile || savedProfile)
+  const setForm = update =>
+    setFormState(current => {
+      const currentForm =
+        current || createAcademicForm(initialProfile || savedProfile)
+      return typeof update === 'function' ? update(currentForm) : update
+    })
+  const departments = Array.isArray(options.departments)
+    ? options.departments
+    : EMPTY_LIST
+  const programmes = Array.isArray(options.programmes)
+    ? options.programmes
+    : EMPTY_LIST
+  const units = Array.isArray(options.units) ? options.units : EMPTY_LIST
+  const { data: lecturerCohortTypes = [] } = useQuery({
+    queryKey: ['profile-lecturer-cohort-types', form.programmeIds],
+    queryFn: async () => {
+      const responses = await Promise.all(
+        form.programmeIds.map(programmeId => {
+          const params = new URLSearchParams({ programmeId })
+          return api.get(`/api/academic/cohort-types?${params}`)
+        })
+      )
+      return [
+        ...new Map(
+          responses
+            .flatMap(response =>
+              Array.isArray(response?.data) ? response.data : []
+            )
+            .map(item => [String(item.id), item])
+        ).values()
+      ]
+    },
+    enabled: isLecturer && form.programmeIds.length > 0
+  })
+  const { data: cohortTypes = [] } = useQuery({
+    queryKey: ['profile-cohort-types', form.programmeId],
+    queryFn: async () => {
+      const params = new URLSearchParams({ programmeId: form.programmeId })
+      const response = await api.get(`/api/academic/cohort-types?${params}`)
+      return Array.isArray(response?.data) ? response.data : []
+    },
+    enabled: Boolean(form.programmeId)
+  })
+  const isClassRep = role === 'CLASS_REP'
   const facultyDepartments = useMemo(
     () =>
       departments.filter(item =>
@@ -68,12 +146,23 @@ export default function ProfileCompletionModal ({ role }) {
       ),
     [units, form.programmeIds]
   )
+  const selectedProgramme = programmes.find(
+    item => String(item.id) === String(form.programmeId)
+  )
 
   const mutation = useMutation({
-    mutationFn: payload => api.post('/api/auth/complete-profile', payload),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['profile-status'] })
+    mutationFn: payload =>
+      editing
+        ? api.put('/api/auth/student-profile', payload)
+        : api.post('/api/auth/complete-profile', payload),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['profile-status'] }),
+        queryClient.invalidateQueries({ queryKey: ['student-academic-profile'] }),
+        queryClient.invalidateQueries({ queryKey: ['student-academic-profile', 'profile-modal'] })
+      ])
       setError('')
+      onSaved?.()
     },
     onError: err => setError(err.message || 'Unable to save academic profile.')
   })
@@ -118,7 +207,20 @@ export default function ProfileCompletionModal ({ role }) {
           )
         )
       })
-      return { ...current, facultyIds, departmentIds, programmeIds, unitIds }
+      const cohortTypeIds = current.cohortTypeIds.filter(id => {
+        const type = lecturerCohortTypes.find(
+          item => String(item.id) === String(id)
+        )
+        return type && programmeIds.includes(String(type.programme_id))
+      })
+      return {
+        ...current,
+        facultyIds,
+        departmentIds,
+        programmeIds,
+        unitIds,
+        cohortTypeIds
+      }
     })
   }
 
@@ -145,7 +247,13 @@ export default function ProfileCompletionModal ({ role }) {
           )
         )
       })
-      return { ...current, departmentIds, programmeIds, unitIds }
+      const cohortTypeIds = current.cohortTypeIds.filter(id => {
+        const type = lecturerCohortTypes.find(
+          item => String(item.id) === String(id)
+        )
+        return type && programmeIds.includes(String(type.programme_id))
+      })
+      return { ...current, departmentIds, programmeIds, unitIds, cohortTypeIds }
     })
   }
 
@@ -163,10 +271,15 @@ export default function ProfileCompletionModal ({ role }) {
           )
         )
       })
-      return { ...current, programmeIds, unitIds }
+      const cohortTypeIds = current.cohortTypeIds.filter(id => {
+        const type = lecturerCohortTypes.find(
+          item => String(item.id) === String(id)
+        )
+        return type && programmeIds.includes(String(type.programme_id))
+      })
+      return { ...current, programmeIds, unitIds, cohortTypeIds }
     })
   }
-  const isLecturer = role === 'LECTURER'
   const submit = event => {
     event.preventDefault()
     setError('')
@@ -175,32 +288,66 @@ export default function ProfileCompletionModal ({ role }) {
         !form.facultyIds.length ||
         !form.departmentIds.length ||
         !form.programmeIds.length ||
-        !form.unitIds.length
+        !form.unitIds.length ||
+        !form.cohortTypeIds.length
       )
         return setError(
-          'Select at least one faculty, department, programme, and unit.'
+          'Select at least one faculty, department, programme, unit, and cohort type.'
         )
       mutation.mutate(form)
     } else {
-      if (!form.academicYearId || !form.programmeId || !form.currentYear)
+      if (
+        !form.academicYearId ||
+        !form.intakeYear ||
+        !form.facultyId ||
+        !form.departmentId ||
+        !form.programmeId ||
+        !form.cohortTypeId ||
+        (isClassRep && form.studentCount === '')
+      )
         return setError(
-          'Select your academic year, current year, and programme.'
+          'Complete all academic profile fields before submitting.'
         )
       mutation.mutate(form)
     }
   }
 
   return (
-    <div className='profile-modal-backdrop'>
-      <section className='profile-modal content-panel'>
-        <p className='eyebrow'>Complete academic profile</p>
-        <h2>{isLecturer ? 'Teaching assignments' : 'Student information'}</h2>
-        <p className='muted'>
-          Complete these details before using the academic workspace. Removing a
-          faculty, department, or programme also clears its dependent
-          selections.
-        </p>
-        <form className='stack-form profile-completion-form' onSubmit={submit}>
+    <div
+      className={
+        variant === 'page'
+          ? 'student-academic-profile-editor'
+          : 'profile-modal-backdrop'
+      }
+    >
+      <section
+        className={
+          variant === 'page'
+            ? 'content-panel'
+            : 'profile-modal content-panel'
+        }
+      >
+        {variant !== 'page' && (
+          <>
+            <p className='eyebrow'>Complete academic profile</p>
+            <h2>
+              {isLecturer
+                ? 'Teaching assignments'
+                : isClassRep
+                  ? 'Cohort academic profile'
+                  : 'Student academic profile'}
+            </h2>
+            <p className='muted'>
+              Complete these details before using the academic workspace.
+            </p>
+          </>
+        )}
+        <form
+          className={`stack-form profile-completion-form ${
+            variant === 'page' ? 'student-academic-profile-form' : ''
+          }`}
+          onSubmit={submit}
+        >
           {isLecturer ? (
             <>
               <fieldset className='selection-container'>
@@ -303,9 +450,34 @@ export default function ProfileCompletionModal ({ role }) {
                   )}
                 </div>
               </fieldset>
+              <fieldset className='selection-container'>
+                <legend>Cohort types you teach</legend>
+                <div className='checkbox-list lecturer-profile-checkboxes'>
+                  {lecturerCohortTypes.map(item => (
+                    <label key={item.id} className='checkbox-option'>
+                      <input
+                        type='checkbox'
+                        checked={form.cohortTypeIds.includes(String(item.id))}
+                        onChange={() => toggle('cohortTypeIds', item.id)}
+                      />
+                      <span>
+                        {item.name} (Year {item.study_year}, Semester{' '}
+                        {item.semester_number})
+                      </span>
+                    </label>
+                  ))}
+                  {!form.programmeIds.length && (
+                    <small>Select a programme first.</small>
+                  )}
+                  {form.programmeIds.length > 0 &&
+                    !lecturerCohortTypes.length && (
+                      <small>No cohort types are available for the selected programmes.</small>
+                    )}
+                </div>
+              </fieldset>
             </>
           ) : (
-            <>
+            <div className='student-academic-profile-fields'>
               <label>
                 Academic year
                 <select
@@ -326,43 +498,148 @@ export default function ProfileCompletionModal ({ role }) {
                 </select>
               </label>
               <label>
-                Current year
-                <select
-                  value={form.currentYear}
+                Intake year
+                <input
+                  type='number'
+                  min='1900'
+                  step='1'
+                  value={form.intakeYear}
+                  disabled={lockCohortIdentity}
                   onChange={event =>
                     setForm(current => ({
                       ...current,
-                      currentYear: event.target.value
+                      intakeYear: event.target.value
                     }))
                   }
-                >
-                  {[1, 2, 3, 4, 5, 6].map(item => (
-                    <option key={item} value={item}>
-                      Year {item}
-                    </option>
-                  ))}
-                </select>
+                />
               </label>
               <label>
-                Programme
+                Faculty
                 <select
-                  value={form.programmeId}
+                  value={form.facultyId}
+                  disabled={lockCohortIdentity}
                   onChange={event =>
                     setForm(current => ({
                       ...current,
-                      programmeId: event.target.value
+                      facultyId: event.target.value,
+                      departmentId: '',
+                      programmeId: '',
+                      cohortTypeId: ''
                     }))
                   }
                 >
-                  <option value=''>Select programme</option>
-                  {programmes.map(item => (
+                  <option value=''>Select faculty</option>
+                  {(options.faculties || []).map(item => (
                     <option key={item.id} value={item.id}>
                       {item.name || item.code}
                     </option>
                   ))}
                 </select>
               </label>
-            </>
+              <label>
+                Department
+                <select
+                  value={form.departmentId}
+                  disabled={!form.facultyId || lockCohortIdentity}
+                  onChange={event =>
+                    setForm(current => ({
+                      ...current,
+                      departmentId: event.target.value,
+                      programmeId: '',
+                      cohortTypeId: ''
+                    }))
+                  }
+                >
+                  <option value=''>Select department</option>
+                  {departments
+                    .filter(
+                      item =>
+                        String(item.faculty_id ?? item.facultyId) ===
+                        String(form.facultyId)
+                    )
+                    .map(item => (
+                      <option key={item.id} value={item.id}>
+                        {item.name || item.code}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label>
+                Programme
+                <select
+                  value={form.programmeId}
+                  disabled={!form.departmentId || lockCohortIdentity}
+                  onChange={event =>
+                    setForm(current => ({
+                      ...current,
+                      programmeId: event.target.value,
+                      cohortTypeId: ''
+                    }))
+                  }
+                >
+                  <option value=''>Select programme</option>
+                  {programmes
+                    .filter(
+                      item =>
+                        String(item.department_id ?? item.departmentId) ===
+                        String(form.departmentId)
+                    )
+                    .map(item => (
+                      <option key={item.id} value={item.id}>
+                        {item.name || item.code}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label>
+                Cohort type
+                <select
+                  value={form.cohortTypeId}
+                  disabled={!form.programmeId}
+                  onChange={event =>
+                    setForm(current => ({
+                      ...current,
+                      cohortTypeId: event.target.value
+                    }))
+                  }
+                >
+                  <option value=''>Select cohort type</option>
+                  {cohortTypes.map(item => (
+                    <option key={item.id} value={item.id}>
+                      {item.name} (Year {item.study_year}, Semester{' '}
+                      {item.semester_number})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {isClassRep && (
+                <label>
+                  Current student count
+                  <input
+                    type='number'
+                    min='0'
+                    step='1'
+                    value={form.studentCount}
+                    onChange={event =>
+                      setForm(current => ({
+                        ...current,
+                        studentCount: event.target.value
+                      }))
+                    }
+                  />
+                </label>
+              )}
+              {selectedProgramme && (
+                <label>
+                  Programme duration
+                  <input
+                    value={`${selectedProgramme.duration_years} years`}
+                    readOnly
+                    aria-readonly='true'
+                  />
+                </label>
+              )}
+            </div>
           )}
           {error && <p className='form-error'>{error}</p>}
           <button
@@ -370,18 +647,34 @@ export default function ProfileCompletionModal ({ role }) {
             className='primary-button'
             disabled={mutation.isPending}
           >
-            {mutation.isPending ? 'Saving...' : 'Save academic profile'}
+            {mutation.isPending
+              ? 'Saving...'
+              : editing
+              ? 'Save changes'
+              : 'Save academic profile'}
           </button>
+          {editing && onCancel && (
+            <button
+              type='button'
+              className='secondary-button'
+              onClick={onCancel}
+              disabled={mutation.isPending}
+            >
+              Cancel
+            </button>
+          )}
         </form>
-        <div className='profile-completion-logout'>
-          <button
-            type='button'
-            className='secondary-button'
-            onClick={() => void logout()}
-          >
-            Log out
-          </button>
-        </div>
+        {variant !== 'page' && (
+          <div className='profile-completion-logout'>
+            <button
+              type='button'
+              className='secondary-button'
+              onClick={() => void logout()}
+            >
+              Log out
+            </button>
+          </div>
+        )}
       </section>
     </div>
   )

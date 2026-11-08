@@ -65,9 +65,15 @@ export default function ExamsPage () {
   const [capacityWarning, setCapacityWarning] = useState(null)
   const [sortBy, setSortBy] = useState('date')
   const [statusFilter, setStatusFilter] = useState('all')
+  const [today, setToday] = useState(todayInputDate)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [examToDelete, setExamToDelete] = useState(null)
+
+  useEffect(() => {
+    const timer = setInterval(() => setToday(todayInputDate()), 60000)
+    return () => clearInterval(timer)
+  }, [])
 
   useEffect(() => {
     if (!formError) return undefined
@@ -137,6 +143,20 @@ export default function ExamsPage () {
     }
   })
 
+  const examVenueLabel = venueDetails => {
+    const venueId =
+      venueDetails.id ?? venueDetails.venue_id ?? venueDetails.venueId
+    const venue = venues.find(item => String(item.id) === String(venueId))
+    const code = venueDetails.code ?? venueDetails.venue_code ?? venue?.code
+    const name =
+      venueDetails.name ??
+      venueDetails.venue_name ??
+      venue?.name ??
+      venue?.venue_name ??
+      'Venue'
+    return `${code ? `${code} · ` : ''}${name}`
+  }
+
   const { data: academicYears = [] } = useQuery({
     queryKey: ['exam-academic-year-options'],
     queryFn: async () => {
@@ -155,6 +175,10 @@ export default function ExamsPage () {
 
   const optionLabel = (items, emptyLabel) => (items.length ? null : emptyLabel)
 
+  const selectedExamSemester = semesters.find(
+    semester => String(semester.id) === String(form.semester_id)
+  )
+
   const eligibleUnits = useMemo(() => {
     return courses.filter(unit => {
       const matchesYear =
@@ -163,7 +187,11 @@ export default function ExamsPage () {
           String(form.unit_year_level)
       const matchesSemester =
         !form.semester_id ||
-        String(unit.semester_id ?? unit.semesterId) === String(form.semester_id)
+        Number(unit.semester_type_id ?? unit.semesterTypeId) ===
+          Number(
+            selectedExamSemester?.semester_type_id ??
+              selectedExamSemester?.semesterTypeId
+          )
       const matchesDepartment =
         !form.department_ids.length ||
         (unit.departmentIds || [unit.department_id ?? unit.departmentId]).some(
@@ -182,7 +210,8 @@ export default function ExamsPage () {
     form.department_ids,
     form.programme_ids,
     form.semester_id,
-    form.unit_year_level
+    form.unit_year_level,
+    selectedExamSemester
   ])
 
   const eligibleDepartments = useMemo(
@@ -214,44 +243,48 @@ export default function ExamsPage () {
     )
   }, [form.academic_year_id, semesters])
 
-  const eligibleCohorts = useMemo(() => {
-    return cohorts.filter(cohort => {
-      const matchesYear =
-        !form.academic_year_id ||
-        String(cohort.academic_year_id ?? cohort.academicYearId) ===
-          String(form.academic_year_id)
-      const matchesDepartment =
-        !form.department_ids.length ||
-        form.department_ids.includes(
-          String(
-            cohort.department_id ??
-              cohort.departmentId ??
-              programmes.find(
-                item =>
-                  String(item.id) ===
-                  String(cohort.programme_id ?? cohort.programmeId)
-              )?.department_id ??
-              programmes.find(
-                item =>
-                  String(item.id) ===
-                  String(cohort.programme_id ?? cohort.programmeId)
-              )?.departmentId
+  const selectedExamUnit = courses.find(
+    unit => String(unit.id) === String(form.course_id)
+  )
+  const { data: eligibleCohorts = [] } = useQuery({
+    queryKey: [
+      'eligible-cohorts',
+      form.academic_year_id,
+      form.semester_id,
+      form.course_id,
+      form.programme_ids
+    ],
+    queryFn: async () => {
+      const studyYear = Number(
+        selectedExamUnit?.year_level ?? selectedExamUnit?.yearLevel
+      )
+      const results = await Promise.all(
+        form.programme_ids.map(async programmeId => {
+          const params = new URLSearchParams({
+            academicYearId: form.academic_year_id,
+            semesterId: form.semester_id,
+            programmeId,
+            studyYear: String(studyYear)
+          })
+          return toArray(
+            await api.get(`/api/academic/eligible-cohorts?${params}`)
           )
-        )
-      const matchesProgramme =
-        !form.programme_ids.length ||
-        form.programme_ids.includes(
-          String(cohort.programme_id ?? cohort.programmeId)
-        )
-      return matchesYear && matchesDepartment && matchesProgramme
-    })
-  }, [
-    cohorts,
-    form.academic_year_id,
-    form.department_ids,
-    form.programme_ids,
-    programmes
-  ])
+        })
+      )
+      return Array.from(
+        new Map(
+          results.flat().map(cohort => [String(cohort.id), cohort])
+        ).values()
+      )
+    },
+    enabled: Boolean(
+      form.academic_year_id &&
+        form.semester_id &&
+        form.course_id &&
+        form.programme_ids.length &&
+        selectedExamUnit
+    )
+  })
 
   const createExamMutation = useMutation({
     mutationFn: async payload =>
@@ -448,20 +481,6 @@ export default function ExamsPage () {
           )
         )
       })
-      const allowedCohorts = new Set(
-        cohorts
-          .filter(cohort =>
-            programme_ids.includes(
-              String(cohort.programme_id ?? cohort.programmeId)
-            )
-          )
-          .map(cohort => String(cohort.id))
-      )
-      const cohort_allocations = Object.fromEntries(
-        Object.entries(current.cohort_allocations).filter(([id]) =>
-          allowedCohorts.has(id)
-        )
-      )
       const selectedUnit = courses.find(
         item => String(item.id) === String(current.course_id)
       )
@@ -475,7 +494,7 @@ export default function ExamsPage () {
         faculty_ids,
         department_ids,
         programme_ids,
-        cohort_allocations,
+        cohort_allocations: {},
         course_id: selectedUnitProgrammes.some(id => programme_ids.includes(id))
           ? current.course_id
           : '',
@@ -510,24 +529,11 @@ export default function ExamsPage () {
         selectedUnit?.programme_ids ||
         []
       ).map(String)
-      const cohortIds = new Set(
-        cohorts
-          .filter(cohort =>
-            programme_ids.includes(
-              String(cohort.programme_id ?? cohort.programmeId)
-            )
-          )
-          .map(cohort => String(cohort.id))
-      )
       return {
         ...current,
         department_ids,
         programme_ids,
-        cohort_allocations: Object.fromEntries(
-          Object.entries(current.cohort_allocations).filter(([id]) =>
-            cohortIds.has(id)
-          )
-        ),
+        cohort_allocations: {},
         course_id: selectedUnitProgrammes.some(id => programme_ids.includes(id))
           ? current.course_id
           : '',
@@ -545,15 +551,6 @@ export default function ExamsPage () {
       const programme_ids = checked
         ? [...new Set([...current.programme_ids, String(programmeId)])]
         : current.programme_ids.filter(id => id !== String(programmeId))
-      const cohortIds = new Set(
-        cohorts
-          .filter(cohort =>
-            programme_ids.includes(
-              String(cohort.programme_id ?? cohort.programmeId)
-            )
-          )
-          .map(cohort => String(cohort.id))
-      )
       const selectedUnit = courses.find(
         item => String(item.id) === String(current.course_id)
       )
@@ -568,11 +565,7 @@ export default function ExamsPage () {
       return {
         ...current,
         programme_ids,
-        cohort_allocations: Object.fromEntries(
-          Object.entries(current.cohort_allocations).filter(([id]) =>
-            cohortIds.has(id)
-          )
-        ),
+        cohort_allocations: {},
         course_id: unitStillAvailable ? current.course_id : '',
         unit_year_level: unitStillAvailable ? current.unit_year_level : ''
       }
@@ -661,7 +654,7 @@ export default function ExamsPage () {
 
     const cohortAllocations = Object.keys(form.cohort_allocations)
       .map(cohortId => {
-        const cohort = cohorts.find(
+        const cohort = eligibleCohorts.find(
           item => String(item.id) === String(cohortId)
         )
         return {
@@ -757,6 +750,8 @@ export default function ExamsPage () {
       academic_year_id: Number(form.academic_year_id),
       semester_id: Number(form.semester_id),
       course_id: Number(form.course_id),
+      programme_ids: form.programme_ids.map(Number),
+      study_year: Number(form.unit_year_level),
       unit_name:
         courses.find(item => String(item.id) === String(form.course_id))
           ?.name || `Unit ${form.course_id}`,
@@ -998,7 +993,8 @@ export default function ExamsPage () {
                       ...current,
                       semester_id: event.target.value,
                       course_id: '',
-                      unit_year_level: ''
+                      unit_year_level: '',
+                      cohort_allocations: {}
                     }))
                   }
                 >
@@ -1099,7 +1095,8 @@ export default function ExamsPage () {
                     setForm(current => ({
                       ...current,
                       unit_year_level: event.target.value,
-                      course_id: ''
+                      course_id: '',
+                      cohort_allocations: {}
                     }))
                   }
                 >
@@ -1127,7 +1124,8 @@ export default function ExamsPage () {
                   onChange={event =>
                     setForm(current => ({
                       ...current,
-                      course_id: event.target.value
+                      course_id: event.target.value,
+                      cohort_allocations: {}
                     }))
                   }
                 >
@@ -1342,7 +1340,11 @@ export default function ExamsPage () {
                             }
                           />
                           <span>
-                            {cohort.name} (
+                            {cohort.name}
+                            {cohort.cohort_type_name
+                              ? ` · ${cohort.cohort_type_name}`
+                              : ''}{' '}
+                            (
                             {cohort.student_count ?? cohort.studentCount ?? 0}{' '}
                             students)
                           </span>
@@ -1497,7 +1499,13 @@ export default function ExamsPage () {
                       >
                         <span>{item.programmes || 'All assigned'}</span>
                       </td>
-                      <td>{item.status || 'SCHEDULED'}</td>
+                      <td>
+                        {item.exam_date && item.exam_date < today ? (
+                          <span className='status-badge muted'>Ended</span>
+                        ) : (
+                          item.status || 'SCHEDULED'
+                        )}
+                      </td>
                       <td>{item.start_time || 'TBA'}</td>
                       <td>{item.end_time || 'TBA'}</td>
                       <td>
@@ -1507,30 +1515,37 @@ export default function ExamsPage () {
                       </td>
                       <td>
                         {(item.venueDetails || [])
-                          .map(venue => `${venue.name} (${venue.capacity})`)
+                          .map(
+                            venue =>
+                              `${examVenueLabel(venue)} (${venue.capacity})`
+                          )
                           .join(', ') || 'N/A'}
                       </td>
-                      {canManageExams && (
-                        <td>
-                          <button
-                            type='button'
-                            className='table-action'
-                            onClick={() => editExam(item)}
-                          >
-                            Edit exam
-                          </button>
-                          <button
-                            type='button'
-                            className='table-action danger'
-                            onClick={() => {
-                              deleteExamMutation.reset()
-                              setExamToDelete(item)
-                            }}
-                          >
-                            Delete
-                          </button>
-                        </td>
-                      )}
+                      {canManageExams &&
+                        (!item.exam_date || item.exam_date >= today) && (
+                          <td>
+                            <button
+                              type='button'
+                              className='table-action'
+                              onClick={() => editExam(item)}
+                            >
+                              Edit exam
+                            </button>
+                            <button
+                              type='button'
+                              className='table-action danger'
+                              onClick={() => {
+                                deleteExamMutation.reset()
+                                setExamToDelete(item)
+                              }}
+                            >
+                              Delete
+                            </button>
+                          </td>
+                        )}
+                      {canManageExams &&
+                        item.exam_date &&
+                        item.exam_date < today && <td />}
                     </tr>
                   ))
                 ) : (

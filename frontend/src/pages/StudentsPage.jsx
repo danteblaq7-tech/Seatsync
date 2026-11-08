@@ -302,11 +302,11 @@ export default function StudentsPage () {
                         }`.trim() ||
                         'Student'}
                     </td>
-                    <td>{item.email || 'N/A'}</td>
-                    <td>{item.phoneNumber || item.phone_number || 'N/A'}</td>
                     <td>
                       {item.student_number || item.studentNumber || 'N/A'}
                     </td>
+                    <td>{item.email || 'N/A'}</td>
+                    <td>{item.phoneNumber || item.phone_number || 'N/A'}</td>
                     <td>
                       {cohortNameMap[String(item.cohort_id ?? item.cohortId)] ||
                         item.cohort ||

@@ -15,7 +15,8 @@ const emptyAcademicInfo = {
   facultyIds: [],
   departmentIds: [],
   programmeIds: [],
-  unitIds: []
+  unitIds: [],
+  cohortTypeIds: []
 }
 
 export default function LecturersPage () {
@@ -58,6 +59,27 @@ export default function LecturersPage () {
   const faculties = Array.isArray(options.faculties) ? options.faculties : []
   const programmes = Array.isArray(options.programmes) ? options.programmes : []
   const units = Array.isArray(options.units) ? options.units : []
+  const { data: availableCohortTypes = [] } = useQuery({
+    queryKey: ['admin-lecturer-cohort-types', academicInfo.programmeIds],
+    queryFn: async () => {
+      const responses = await Promise.all(
+        academicInfo.programmeIds.map(programmeId => {
+          const params = new URLSearchParams({ programmeId })
+          return api.get(`/api/academic/cohort-types?${params}`)
+        })
+      )
+      return [
+        ...new Map(
+          responses
+            .flatMap(response =>
+              Array.isArray(response?.data) ? response.data : []
+            )
+            .map(item => [String(item.id), item])
+        ).values()
+      ]
+    },
+    enabled: academicInfo.programmeIds.length > 0
+  })
 
   const departmentNameMap = Object.fromEntries(
     (departments || []).map(department => [
@@ -163,7 +185,8 @@ export default function LecturersPage () {
         facultyIds: (profile.facultyIds || []).map(String),
         departmentIds: (profile.departmentIds || []).map(String),
         programmeIds: (profile.programmeIds || []).map(String),
-        unitIds: (profile.unitIds || []).map(String)
+        unitIds: (profile.unitIds || []).map(String),
+        cohortTypeIds: (profile.cohortTypeIds || []).map(String)
       })
     } catch (error) {
       setEditError(
@@ -208,7 +231,20 @@ export default function LecturersPage () {
           )
         )
       })
-      return { ...current, facultyIds, departmentIds, programmeIds, unitIds }
+      const cohortTypeIds = current.cohortTypeIds.filter(id => {
+        const type = availableCohortTypes.find(
+          item => String(item.id) === String(id)
+        )
+        return type && programmeIds.includes(String(type.programme_id))
+      })
+      return {
+        ...current,
+        facultyIds,
+        departmentIds,
+        programmeIds,
+        unitIds,
+        cohortTypeIds
+      }
     })
   }
 
@@ -237,7 +273,13 @@ export default function LecturersPage () {
           )
         )
       })
-      return { ...current, departmentIds, programmeIds, unitIds }
+      const cohortTypeIds = current.cohortTypeIds.filter(id => {
+        const type = availableCohortTypes.find(
+          item => String(item.id) === String(id)
+        )
+        return type && programmeIds.includes(String(type.programme_id))
+      })
+      return { ...current, departmentIds, programmeIds, unitIds, cohortTypeIds }
     })
   }
 
@@ -255,7 +297,13 @@ export default function LecturersPage () {
           )
         )
       })
-      return { ...current, programmeIds, unitIds }
+      const cohortTypeIds = current.cohortTypeIds.filter(id => {
+        const type = availableCohortTypes.find(
+          item => String(item.id) === String(id)
+        )
+        return type && programmeIds.includes(String(type.programme_id))
+      })
+      return { ...current, programmeIds, unitIds, cohortTypeIds }
     })
   }
 
@@ -266,10 +314,11 @@ export default function LecturersPage () {
       !academicInfo.facultyIds.length ||
       !academicInfo.departmentIds.length ||
       !academicInfo.programmeIds.length ||
-      !academicInfo.unitIds.length
+      !academicInfo.unitIds.length ||
+      !academicInfo.cohortTypeIds.length
     ) {
       setEditError(
-        'Select at least one faculty, department, programme, and unit.'
+        'Select at least one faculty, department, programme, unit, and cohort type.'
       )
       return
     }
@@ -280,7 +329,8 @@ export default function LecturersPage () {
         facultyIds: academicInfo.facultyIds.map(Number),
         departmentIds: academicInfo.departmentIds.map(Number),
         programmeIds: academicInfo.programmeIds.map(Number),
-        unitIds: academicInfo.unitIds.map(Number)
+        unitIds: academicInfo.unitIds.map(Number),
+        cohortTypeIds: academicInfo.cohortTypeIds.map(Number)
       }
     })
   }
@@ -506,6 +556,21 @@ export default function LecturersPage () {
                         unitIds: checked
                           ? [...new Set([...current.unitIds, String(id)])]
                           : current.unitIds.filter(
+                              value => value !== String(id)
+                            )
+                      })),
+                    'Select a programme first.'
+                  )}
+                  {academicCheckboxGroup(
+                    'Cohort types',
+                    availableCohortTypes,
+                    'cohortTypeIds',
+                    (id, checked) =>
+                      setAcademicInfo(current => ({
+                        ...current,
+                        cohortTypeIds: checked
+                          ? [...new Set([...current.cohortTypeIds, String(id)])]
+                          : current.cohortTypeIds.filter(
                               value => value !== String(id)
                             )
                       })),

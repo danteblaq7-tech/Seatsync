@@ -122,6 +122,12 @@ const navByRole = {
       to: '/dashboard'
     },
     {
+      group: 'Academic',
+      label: 'My academic information',
+      icon: faUserGraduate,
+      to: '/academic/profile'
+    },
+    {
       group: 'Scheduling',
       label: 'Timetable',
       icon: faTableCells,
@@ -147,6 +153,12 @@ const navByRole = {
       label: 'Dashboard',
       icon: faChartPie,
       to: '/dashboard'
+    },
+    {
+      group: 'Academic',
+      label: 'My academic information',
+      icon: faUserGraduate,
+      to: '/academic/profile'
     },
     {
       group: 'Scheduling',

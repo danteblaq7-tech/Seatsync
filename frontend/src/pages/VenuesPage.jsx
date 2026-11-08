@@ -130,6 +130,13 @@ export default function VenuesPage () {
       queryClient.invalidateQueries({
         queryKey: ['venue-timetable-allocations']
       })
+      queryClient.invalidateQueries({ queryKey: ['venue-availability'] })
+    })
+
+    socket.on('timetable:changed', () => {
+      queryClient.invalidateQueries({ queryKey: ['venue-timetable-allocations'] })
+      queryClient.invalidateQueries({ queryKey: ['venue-exam-allocations'] })
+      queryClient.invalidateQueries({ queryKey: ['venue-availability'] })
     })
 
     return () => {
@@ -147,6 +154,7 @@ export default function VenuesPage () {
     if (!venue || !data) return { badge: 'Available now', level: 'ok' }
 
     const venueId = String(venue.id)
+    const dayKey = value => String(value || '').slice(0, 3).toLowerCase()
     const currentDay = [
       'Sunday',
       'Monday',
@@ -157,19 +165,46 @@ export default function VenuesPage () {
       'Saturday'
     ][now.getDay()]
     const currentTime = now.toTimeString().slice(0, 5)
+    const currentDate = `${now.getFullYear()}-${String(
+      now.getMonth() + 1
+    ).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+    const overriddenEntryIds = new Set(
+      (timetable || [])
+        .filter(
+          entry =>
+            String(entry.effective_date || '').slice(0, 10) === currentDate
+        )
+        .map(entry =>
+          Number(entry.timetable_entry_id ?? entry.timetableEntryId)
+        )
+        .filter(Number.isFinite)
+    )
 
     const activeTimetableEvent = (timetable || []).find(entry => {
       if (String(entry.venue_id ?? entry.venueId) !== venueId) return false
+      const eventStatus = String(entry.status || 'SCHEDULED').toUpperCase()
+      if (
+        eventStatus !== 'SCHEDULED' &&
+        !(entry.effective_date && eventStatus === 'APPROVED')
+      ) {
+        return false
+      }
       const entryDay = entry.day_of_week || entry.dayOfWeek
+      if (
+        !entry.effective_date &&
+        overriddenEntryIds.has(Number(entry.id))
+      ) {
+        return false
+      }
       const start = String(
         entry.start_time || entry.startTime || '00:00'
       ).slice(0, 5)
       const end = String(entry.end_time || entry.endTime || '00:00').slice(0, 5)
-      const isRecurring = !entry.effective_date && entryDay === currentDay
+      const isRecurring =
+        !entry.effective_date && dayKey(entryDay) === dayKey(currentDay)
       const isMakeup =
         Boolean(entry.effective_date) &&
-        String(entry.effective_date).slice(0, 10) ===
-          now.toISOString().slice(0, 10)
+        String(entry.effective_date).slice(0, 10) === currentDate
       return (
         (isRecurring || isMakeup) && currentTime >= start && currentTime < end
       )
@@ -177,7 +212,7 @@ export default function VenuesPage () {
 
     if (activeTimetableEvent) {
       return {
-        badge: `${String(
+        badge: `Occupied now · ${String(
           activeTimetableEvent.event_type ||
             activeTimetableEvent.eventType ||
             'Lecture'
@@ -195,14 +230,14 @@ export default function VenuesPage () {
       const examStart = String(exam.start_time || '00:00').slice(0, 5)
       const examEnd = String(exam.end_time || '23:59').slice(0, 5)
       return (
-        examDate === now.toISOString().slice(0, 10) &&
+        examDate === currentDate &&
         currentTime >= examStart &&
         currentTime < examEnd
       )
     })
 
     if (activeExam) {
-      return { badge: 'EXAM ongoing', level: 'warn' }
+      return { badge: 'Occupied now · EXAM ongoing', level: 'warn' }
     }
 
     return { badge: 'Available now', level: 'ok' }

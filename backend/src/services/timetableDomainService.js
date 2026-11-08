@@ -7,6 +7,7 @@ import {
 } from '../repositories/sqlRepository.js'
 import db from '../config/db.js'
 import { validateTimetableEntry } from './scheduling/conflictService.js'
+import { validateAcademicPeriod } from './academicProgressionValidation.js'
 
 export const listTimetableEntries = async user => {
   const roles = Array.isArray(user?.roles) ? user.roles : []
@@ -157,6 +158,22 @@ export const createTimetableEntry = async payload => {
   )
     .map(Number)
     .filter(Boolean)
+  const programmeIds = (payload.programme_ids || []).map(Number).filter(Boolean)
+  const academicConnection = await db.getConnection()
+  let academicValidation
+  try {
+    academicValidation = await validateAcademicPeriod(academicConnection, {
+      academicYearId: payload.academic_year_id ?? payload.academicYearId,
+      semesterId: payload.semester_id ?? payload.semesterId,
+      unitId: payload.course_id ?? payload.courseId,
+      lecturerId: payload.lecturer_id ?? payload.lecturerId,
+      studyYear: payload.study_year ?? payload.studyYear,
+      programmeIds,
+      cohortIds
+    })
+  } finally {
+    academicConnection.release()
+  }
   const existingEvents = payload.existing_events ||
     payload.existingEvents || [
       ...(
@@ -218,14 +235,8 @@ export const createTimetableEntry = async payload => {
       }`.trim() || lecturerUser.email
     : null
   const cohort = await findById('cohorts', payload.cohort_id)
-  const expectedStudents = Number(
-    payload.expected_students ?? payload.expectedStudents ?? 0
-  )
-  const venueCapacity = Number(
-    payload.venue_capacity ??
-      payload.venueCapacity ??
-      (venue ? venue.capacity : 0)
-  )
+  const expectedStudents = academicValidation.expectedStudents
+  const venueCapacity = Number(venue?.capacity || 0)
 
   const validation = validateTimetableEntry({
     venueId: payload.venue_id,
@@ -250,7 +261,6 @@ export const createTimetableEntry = async payload => {
     return { valid: false, conflicts: validation.conflicts }
   }
 
-  const programmeIds = (payload.programme_ids || []).map(Number).filter(Boolean)
   const record = await createRow('timetable_entries', {
     academic_year_id: payload.academic_year_id,
     semester_id: payload.semester_id,
@@ -314,14 +324,38 @@ export const updateTimetableEntry = async (id, updates) => {
   const connection = await db.getConnection()
   try {
     await connection.beginTransaction()
-    const [existing] = await connection.execute(
-      'SELECT id FROM timetable_entries WHERE id = ? FOR UPDATE',
+    const [existingRows] = await connection.execute(
+      'SELECT * FROM timetable_entries WHERE id = ? FOR UPDATE',
       [id]
     )
-    if (!existing.length) {
+    const existing = existingRows[0]
+    if (!existing) {
       await connection.rollback()
       return null
     }
+    const [existingProgrammeRows] = await connection.execute(
+      'SELECT programme_id FROM timetable_entry_programmes WHERE timetable_entry_id = ?',
+      [id]
+    )
+    const [existingCohortRows] = await connection.execute(
+      'SELECT cohort_id FROM timetable_entry_cohorts WHERE timetable_entry_id = ?',
+      [id]
+    )
+    const effectiveCohortIds = Array.isArray(updates.cohort_ids)
+      ? updates.cohort_ids
+      : existingCohortRows.map(row => row.cohort_id)
+    const effectiveProgrammeIds = Array.isArray(updates.programme_ids)
+      ? updates.programme_ids
+      : existingProgrammeRows.map(row => row.programme_id)
+    await validateAcademicPeriod(connection, {
+      academicYearId:
+        safeFields.academic_year_id ?? existing.academic_year_id,
+      semesterId: safeFields.semester_id ?? existing.semester_id,
+      unitId: safeFields.unit_id ?? existing.unit_id,
+      lecturerId: safeFields.lecturer_id ?? existing.lecturer_id,
+      programmeIds: effectiveProgrammeIds,
+      cohortIds: effectiveCohortIds
+    })
     const keys = Object.keys(safeFields)
     if (keys.length) {
       const assignments = keys.map(key => `\`${key}\` = ?`).join(', ')

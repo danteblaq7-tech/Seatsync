@@ -37,15 +37,18 @@ const initialForms = {
   semester: {
     name: '',
     number: '',
+    semester_type_id: '',
     academic_year_id: '',
     start_date: '',
     end_date: ''
   },
   cohort: {
-    name: '',
     programme_id: '',
-    student_count: '',
-    academic_year_id: ''
+    cohort_type_id: '',
+    academic_year_id: '',
+    semester_id: '',
+    intake_year: '',
+    student_count: ''
   }
 }
 
@@ -69,9 +72,27 @@ export default function AcademicSetupPage () {
     description: '',
     department_ids: [],
     programme_ids: [],
-    semester_id: '',
+    semester_type_id: '',
     year_level: 1
   })
+
+  const { data: cohortTypes = [] } = useQuery({
+    queryKey: ['academic-cohort-types', forms.cohort.programme_id],
+    queryFn: async () => {
+      if (!forms.cohort.programme_id) return []
+      const params = new URLSearchParams({
+        programmeId: forms.cohort.programme_id
+      })
+      return toArray(await api.get(`/api/academic/cohort-types?${params}`))
+    },
+    enabled: Boolean(forms.cohort.programme_id)
+  })
+
+  const { data: semesterTypes = [], isLoading: semesterTypesLoading } =
+    useQuery({
+      queryKey: ['academic-semester-types'],
+      queryFn: async () => toArray(await api.get('/api/academic/semester-types'))
+    })
 
   const recordEndpoints = {
     faculty: '/api/academic/faculties',
@@ -90,6 +111,8 @@ export default function AcademicSetupPage () {
         'academic-programmes',
         'academic-years',
         'academic-semesters',
+        'academic-semester-types',
+        'academic-cohort-types',
         'academic-cohorts',
         'cohorts',
         'academic-courses',
@@ -161,6 +184,9 @@ export default function AcademicSetupPage () {
       semester: {
         name: record.name || '',
         number: String(record.number ?? record.semester_number ?? ''),
+        semester_type_id: String(
+          record.semester_type_id ?? record.semesterTypeId ?? ''
+        ),
         academic_year_id: String(
           record.academic_year_id ?? record.academicYearId ?? ''
         ),
@@ -197,7 +223,9 @@ export default function AcademicSetupPage () {
       programme_ids: (unit.programmeIds || unit.programme_ids || []).map(
         String
       ),
-      semester_id: String(unit.semester_id ?? unit.semesterId ?? ''),
+      semester_type_id: String(
+        unit.semester_type_id ?? unit.semesterTypeId ?? ''
+      ),
       year_level: unit.year_level ?? unit.yearLevel ?? 1
     })
   }
@@ -231,6 +259,8 @@ export default function AcademicSetupPage () {
       queryClient.invalidateQueries({ queryKey: ['academic-programmes'] })
       queryClient.invalidateQueries({ queryKey: ['academic-years'] })
       queryClient.invalidateQueries({ queryKey: ['academic-semesters'] })
+      queryClient.invalidateQueries({ queryKey: ['academic-semester-types'] })
+      queryClient.invalidateQueries({ queryKey: ['academic-cohort-types'] })
       queryClient.invalidateQueries({ queryKey: ['academic-cohorts'] })
       queryClient.invalidateQueries({ queryKey: ['academic-courses'] })
       queryClient.invalidateQueries({ queryKey: ['cohorts'] })
@@ -250,6 +280,8 @@ export default function AcademicSetupPage () {
       queryClient.invalidateQueries({ queryKey: ['academic-programmes'] })
       queryClient.invalidateQueries({ queryKey: ['academic-years'] })
       queryClient.invalidateQueries({ queryKey: ['academic-semesters'] })
+      queryClient.invalidateQueries({ queryKey: ['academic-semester-types'] })
+      queryClient.invalidateQueries({ queryKey: ['academic-cohort-types'] })
       queryClient.invalidateQueries({ queryKey: ['academic-cohorts'] })
       queryClient.invalidateQueries({ queryKey: ['academic-courses'] })
       queryClient.invalidateQueries({ queryKey: ['cohorts'] })
@@ -326,6 +358,7 @@ export default function AcademicSetupPage () {
     programmesLoading ||
     academicYearsLoading ||
     semestersLoading ||
+    semesterTypesLoading ||
     cohortsLoading ||
     coursesLoading
 
@@ -439,8 +472,7 @@ export default function AcademicSetupPage () {
     semester: {
       endpoint: '/api/academic/semesters',
       payloadBuilder: form => ({
-        name: form.name || `Semester ${form.number || 1}`,
-        number: Number(form.number) || 1,
+        semester_type_id: Number(form.semester_type_id) || null,
         academic_year_id: Number(form.academic_year_id) || null,
         start_date: form.start_date,
         end_date: form.end_date
@@ -449,9 +481,11 @@ export default function AcademicSetupPage () {
     cohort: {
       endpoint: '/api/academic/cohorts',
       payloadBuilder: form => ({
-        name: form.name,
         programme_id: Number(form.programme_id) || null,
+        cohort_type_id: Number(form.cohort_type_id) || null,
         academic_year_id: Number(form.academic_year_id) || null,
+        semester_id: Number(form.semester_id) || null,
+        intake_year: Number(form.intake_year) || null,
         student_count: Number(form.student_count) || 0
       })
     }
@@ -532,46 +566,31 @@ export default function AcademicSetupPage () {
     }
     if (section === 'semester') {
       const sameYear = Number(payload.academic_year_id || 0)
+      const selectedType = semesterTypes.find(
+        type => Number(type.id) === Number(payload.semester_type_id)
+      )
       const duplicate = semesters.some(item => {
         if (currentId && Number(item.id) === Number(currentId)) return false
         const sameAcademicYear =
           Number(item.academic_year_id ?? item.academicYearId ?? 0) === sameYear
-        const sameName =
-          String(item.name ?? '')
-            .trim()
-            .toLowerCase() ===
-          String(payload.name ?? '')
-            .trim()
-            .toLowerCase()
-        const sameNumber =
+        const existingType = semesterTypes.find(
+          type =>
+            Number(type.id) ===
+            Number(item.semester_type_id ?? item.semesterTypeId)
+        )
+        const sameType =
+          Number(item.semester_type_id ?? item.semesterTypeId) ===
+            Number(payload.semester_type_id) ||
           Number(
             item.number ?? item.semester_number ?? item.semesterNumber ?? 0
-          ) === Number(payload.number || 0)
-        return sameAcademicYear && (sameName || sameNumber)
+          ) === Number(selectedType?.number) ||
+          (existingType?.name &&
+            String(existingType.name).toLowerCase() ===
+              String(selectedType?.name || '').toLowerCase())
+        return sameAcademicYear && sameType
       })
       if (duplicate) {
         return 'A semester with that academic year, name, or number already exists.'
-      }
-    }
-    if (section === 'cohort') {
-      const sameProgramme = Number(payload.programme_id || 0)
-      const duplicate = cohorts.some(item => {
-        if (currentId && Number(item.id) === Number(currentId)) return false
-        const itemProgramme = Number(item.programme_id ?? item.programmeId ?? 0)
-        const sameAcademicYear =
-          Number(item.academic_year_id ?? item.academicYearId ?? 0) ===
-          Number(payload.academic_year_id || 0)
-        const sameName =
-          String(item.name ?? '')
-            .trim()
-            .toLowerCase() ===
-          String(payload.name ?? '')
-            .trim()
-            .toLowerCase()
-        return itemProgramme === sameProgramme && sameAcademicYear && sameName
-      })
-      if (duplicate) {
-        return 'A cohort with that programme, academic year, and name already exists.'
       }
     }
     return ''
@@ -618,23 +637,29 @@ export default function AcademicSetupPage () {
 
     if (
       section === 'semester' &&
-      (!payload.name ||
+      (!payload.semester_type_id ||
         !payload.academic_year_id ||
         !payload.start_date ||
         !payload.end_date ||
         payload.start_date > payload.end_date)
     ) {
       toast.error(
-        'Semester name, academic year, start date, and end date are required, and the start must come first.'
+        'Semester type, academic year, start date, and end date are required, and the start must come first.'
       )
       return
     }
 
     if (
       section === 'cohort' &&
-      (!payload.name || !payload.programme_id || !payload.academic_year_id)
+      (!payload.programme_id ||
+        !payload.cohort_type_id ||
+        !payload.academic_year_id ||
+        !payload.semester_id ||
+        !payload.intake_year)
     ) {
-      toast.error('Cohort name, programme, and academic year are required.')
+      toast.error(
+        'Programme, cohort type, academic year, semester, and intake year are required.'
+      )
       return
     }
 
@@ -910,32 +935,24 @@ export default function AcademicSetupPage () {
               {activeSection === 'semester' && (
                 <>
                   <label>
-                    Semester name
-                    <input
-                      value={forms.semester.name}
+                    Semester type
+                    <select
+                      value={forms.semester.semester_type_id}
                       onChange={event =>
                         handleFieldChange(
                           'semester',
-                          'name',
+                          'semester_type_id',
                           event.target.value
                         )
                       }
-                      placeholder='Semester 1'
-                    />
-                  </label>
-                  <label>
-                    Semester number
-                    <input
-                      type='number'
-                      value={forms.semester.number}
-                      onChange={event =>
-                        handleFieldChange(
-                          'semester',
-                          'number',
-                          event.target.value
-                        )
-                      }
-                    />
+                    >
+                      <option value=''>Select semester type</option>
+                      {semesterTypes.map(type => (
+                        <option key={type.id} value={type.id}>
+                          {type.name} (Semester {type.number})
+                        </option>
+                      ))}
+                    </select>
                   </label>
                   <label>
                     Academic year
@@ -1031,16 +1048,6 @@ export default function AcademicSetupPage () {
               {activeSection === 'cohort' && (
                 <>
                   <label>
-                    Cohort name
-                    <input
-                      value={forms.cohort.name}
-                      onChange={event =>
-                        handleFieldChange('cohort', 'name', event.target.value)
-                      }
-                      placeholder='BCS 3.1'
-                    />
-                  </label>
-                  <label>
                     Programme
                     <SearchableSelect
                       options={programmes.map(programme => ({
@@ -1051,25 +1058,57 @@ export default function AcademicSetupPage () {
                         }`
                       }))}
                       value={forms.cohort.programme_id}
-                      onChange={value =>
-                        handleFieldChange('cohort', 'programme_id', value)
-                      }
+                      onChange={value => {
+                        setForms(current => ({
+                          ...current,
+                          cohort: {
+                            ...current.cohort,
+                            programme_id: value,
+                            cohort_type_id: ''
+                          }
+                        }))
+                      }}
                       placeholder='Select programme'
                       searchPlaceholder='Search programmes'
                       ariaLabel='Search cohort programmes'
                     />
                   </label>
                   <label>
-                    Academic year
+                    Cohort type
                     <select
-                      value={forms.cohort.academic_year_id}
+                      value={forms.cohort.cohort_type_id}
                       onChange={event =>
                         handleFieldChange(
                           'cohort',
-                          'academic_year_id',
+                          'cohort_type_id',
                           event.target.value
                         )
                       }
+                      disabled={!forms.cohort.programme_id}
+                    >
+                      <option value=''>Select cohort type</option>
+                      {cohortTypes.map(type => (
+                        <option key={type.id} value={type.id}>
+                          {type.name} (Year {type.study_year}, Semester{' '}
+                          {type.semester_number})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Academic year
+                    <select
+                      value={forms.cohort.academic_year_id}
+                      onChange={event => {
+                        setForms(current => ({
+                          ...current,
+                          cohort: {
+                            ...current.cohort,
+                            academic_year_id: event.target.value,
+                            semester_id: ''
+                          }
+                        }))
+                      }}
                     >
                       <option value=''>Select academic year</option>
                       {academicYears.map(year => (
@@ -1083,9 +1122,56 @@ export default function AcademicSetupPage () {
                     </select>
                   </label>
                   <label>
+                    Semester
+                    <select
+                      value={forms.cohort.semester_id}
+                      onChange={event =>
+                        handleFieldChange(
+                          'cohort',
+                          'semester_id',
+                          event.target.value
+                        )
+                      }
+                      disabled={!forms.cohort.academic_year_id}
+                    >
+                      <option value=''>Select semester</option>
+                      {semesters
+                        .filter(
+                          semester =>
+                            String(
+                              semester.academic_year_id ??
+                                semester.academicYearId
+                            ) === String(forms.cohort.academic_year_id)
+                        )
+                        .map(semester => (
+                          <option key={semester.id} value={semester.id}>
+                            {semesterLabel(semester, academicYears)}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <label>
+                    Intake year
+                    <input
+                      type='number'
+                      min='1900'
+                      step='1'
+                      value={forms.cohort.intake_year}
+                      onChange={event =>
+                        handleFieldChange(
+                          'cohort',
+                          'intake_year',
+                          event.target.value
+                        )
+                      }
+                    />
+                  </label>
+                  <label>
                     Student count
                     <input
                       type='number'
+                      min='0'
+                      step='1'
                       value={forms.cohort.student_count}
                       onChange={event =>
                         handleFieldChange(
@@ -1144,10 +1230,14 @@ export default function AcademicSetupPage () {
                 programme_ids: unitForm.programme_ids
                   .map(Number)
                   .filter(Boolean),
-                semester_id: Number(unitForm.semester_id) || null,
+                semester_type_id: Number(unitForm.semester_type_id) || null,
                 year_level: Number(unitForm.year_level) || 1
               }
-              if (!payload.code || !payload.name || !payload.semester_id) {
+              if (
+                !payload.code ||
+                !payload.name ||
+                !payload.semester_type_id
+              ) {
                 toast.error('Unit code, name, and semester are required.')
                 return
               }
@@ -1195,20 +1285,20 @@ export default function AcademicSetupPage () {
                 />
               </label>
               <label>
-                Semester
+                Semester type
                 <select
-                  value={unitForm.semester_id}
+                  value={unitForm.semester_type_id}
                   onChange={event =>
                     setUnitForm(current => ({
                       ...current,
-                      semester_id: event.target.value
+                      semester_type_id: event.target.value
                     }))
                   }
                 >
-                  <option value=''>Select semester</option>
-                  {semesters.map(semester => (
-                    <option key={semester.id} value={semester.id}>
-                      {semesterLabel(semester, academicYears)}
+                  <option value=''>Select semester type</option>
+                  {semesterTypes.map(type => (
+                    <option key={type.id} value={type.id}>
+                      {type.name} (Semester {type.number})
                     </option>
                   ))}
                 </select>
@@ -1464,6 +1554,19 @@ export default function AcademicSetupPage () {
               }
             />
             <AcademicRecordsTable
+              title='Reusable semester types'
+              records={semesterTypes}
+              columns={[
+                { key: 'name', label: 'Name' },
+                { key: 'number', label: 'Semester number' },
+                {
+                  key: 'status',
+                  label: 'Status',
+                  value: item => (item.is_active ? 'Active' : 'Inactive')
+                }
+              ]}
+            />
+            <AcademicRecordsTable
               title='Semesters'
               records={semesters}
               columns={[
@@ -1534,14 +1637,22 @@ export default function AcademicSetupPage () {
                   }
                 },
                 {
-                  key: 'year',
-                  label: 'Academic year',
+                  key: 'intake',
+                  label: 'Intake year',
+                  value: item => item.intake_year ?? '—'
+                },
+                {
+                  key: 'stage',
+                  label: 'Current stage',
+                  value: item => item.current_cohort_type_name || 'Needs setup'
+                },
+                {
+                  key: 'period',
+                  label: 'Current period',
                   value: item =>
-                    academicYears.find(
-                      year =>
-                        String(year.id) ===
-                        String(item.academic_year_id ?? item.academicYearId)
-                    )?.name || 'Unassigned'
+                    item.current_semester_name && item.current_academic_year_name
+                      ? `${item.current_semester_name}, ${item.current_academic_year_name}`
+                      : 'Needs setup'
                 },
                 {
                   key: 'students',
@@ -1562,7 +1673,6 @@ export default function AcademicSetupPage () {
                   }))
                 }
               ]}
-              onEdit={record => openRecordEditor('cohort', record)}
               onDelete={record =>
                 setRecordToDelete({ entity: 'cohort', record })
               }
@@ -1623,10 +1733,12 @@ export default function AcademicSetupPage () {
                         <td>{unit.programmeName}</td>
                         <td>{unit.year_level ?? unit.yearLevel ?? 'N/A'}</td>
                         <td>
-                          {semesters.find(
-                            semester =>
-                              String(semester.id) ===
-                              String(unit.semester_id ?? unit.semesterId)
+                          {semesterTypes.find(
+                            type =>
+                              String(type.id) ===
+                              String(
+                                unit.semester_type_id ?? unit.semesterTypeId ?? ''
+                              )
                           )?.name || 'Unassigned'}
                         </td>
                         <td className='academic-record-actions'>

@@ -145,11 +145,15 @@ export const createScheduleOverride = async ({
        AND TIME(start_datetime) < ? AND TIME(end_datetime) > ?`,
       [newVenueId, effectiveDate, effectiveDate, newEndTime, newStartTime]
     ))
-  const matchingOverrides = await listRows('schedule_overrides', {
+  const appliedOverrides = await listRows('schedule_overrides', {
     effective_date: effectiveDate,
-    new_venue_id: newVenueId,
     status: 'APPROVED'
   })
+  const matchingOverrides = appliedOverrides.filter(
+    override =>
+      Number(override.newVenueId ?? override.new_venue_id) ===
+      Number(newVenueId)
+  )
   const overrideConflict = matchingOverrides.some(
     override =>
       String(newStartTime) < String(override.newEndTime) &&
@@ -201,8 +205,15 @@ export const createScheduleOverride = async ({
       [effectiveDate]
     )
   ])
+  const overriddenEntryIds = new Set(
+    appliedOverrides.map(override =>
+      Number(override.timetableEntryId ?? override.timetable_entry_id)
+    )
+  )
   const otherEntries = timetableRows.filter(
-    row => Number(row.id) !== Number(timetableEntryId)
+    row =>
+      Number(row.id) !== Number(timetableEntryId) &&
+      !overriddenEntryIds.has(Number(row.id))
   )
   const currentEntry = timetableRows.find(
     row => Number(row.id) === Number(timetableEntryId)

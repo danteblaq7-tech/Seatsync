@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 
@@ -6,16 +6,6 @@ const list = value => (Array.isArray(value) ? value : [])
 const asStrings = value => list(value).map(String)
 
 export default function LecturerProfilePage () {
-  const queryClient = useQueryClient()
-  const [form, setForm] = useState({
-    title: '',
-    facultyIds: [],
-    departmentIds: [],
-    programmeIds: [],
-    unitIds: []
-  })
-  const [message, setMessage] = useState('')
-
   const { data: profileResponse, isLoading: profileLoading } = useQuery({
     queryKey: ['lecturer-academic-profile'],
     queryFn: () => api.get('/api/auth/lecturer-profile')
@@ -26,21 +16,54 @@ export default function LecturerProfilePage () {
   })
   const profile = profileResponse?.data || {}
   const options = optionsResponse?.data || {}
+  if (profileLoading || optionsLoading) {
+    return <div className='content-panel'>Loading academic profile…</div>
+  }
+  return (
+    <LecturerProfileEditor
+      key={profile.id}
+      profile={profile}
+      options={options}
+    />
+  )
+}
+
+function LecturerProfileEditor ({ profile, options }) {
+  const queryClient = useQueryClient()
+  const [form, setForm] = useState(() => ({
+    title: profile.title || '',
+    facultyIds: asStrings(profile.facultyIds),
+    departmentIds: asStrings(profile.departmentIds),
+    programmeIds: asStrings(profile.programmeIds),
+    unitIds: asStrings(profile.unitIds),
+    cohortTypeIds: asStrings(profile.cohortTypeIds)
+  }))
+  const [message, setMessage] = useState('')
   const faculties = list(options.faculties)
   const departments = list(options.departments)
   const programmes = list(options.programmes)
   const units = list(options.units)
-
-  useEffect(() => {
-    if (!profileResponse?.data) return
-    setForm({
-      title: profile.title || '',
-      facultyIds: asStrings(profile.facultyIds),
-      departmentIds: asStrings(profile.departmentIds),
-      programmeIds: asStrings(profile.programmeIds),
-      unitIds: asStrings(profile.unitIds)
-    })
-  }, [profileResponse])
+  const { data: availableCohortTypes = [] } = useQuery({
+    queryKey: ['lecturer-profile-cohort-types', form.programmeIds],
+    queryFn: async () => {
+      const responses = await Promise.all(
+        form.programmeIds.map(programmeId => {
+          const params = new URLSearchParams({ programmeId })
+          return api.get(`/api/academic/cohort-types?${params}`)
+        })
+      )
+      return [
+        ...new Map(
+          responses
+            .flatMap(response =>
+              Array.isArray(response?.data) ? response.data : []
+            )
+            .map(item => [String(item.id), item])
+        ).values()
+      ]
+    },
+    enabled: form.programmeIds.length > 0
+  })
 
   const availableDepartments = useMemo(
     () =>
@@ -122,7 +145,20 @@ export default function LecturerProfilePage () {
           )
         )
       })
-      return { ...current, facultyIds, departmentIds, programmeIds, unitIds }
+      const cohortTypeIds = current.cohortTypeIds.filter(id => {
+        const type = availableCohortTypes.find(
+          item => String(item.id) === String(id)
+        )
+        return type && programmeIds.includes(String(type.programme_id))
+      })
+      return {
+        ...current,
+        facultyIds,
+        departmentIds,
+        programmeIds,
+        unitIds,
+        cohortTypeIds
+      }
     })
   }
 
@@ -151,7 +187,19 @@ export default function LecturerProfilePage () {
           )
         )
       })
-      return { ...current, departmentIds, programmeIds, unitIds }
+      const cohortTypeIds = current.cohortTypeIds.filter(id => {
+        const type = availableCohortTypes.find(
+          item => String(item.id) === String(id)
+        )
+        return type && programmeIds.includes(String(type.programme_id))
+      })
+      return {
+        ...current,
+        departmentIds,
+        programmeIds,
+        unitIds,
+        cohortTypeIds
+      }
     })
   }
 
@@ -169,7 +217,13 @@ export default function LecturerProfilePage () {
           )
         )
       })
-      return { ...current, programmeIds, unitIds }
+      const cohortTypeIds = current.cohortTypeIds.filter(id => {
+        const type = availableCohortTypes.find(
+          item => String(item.id) === String(id)
+        )
+        return type && programmeIds.includes(String(type.programme_id))
+      })
+      return { ...current, programmeIds, unitIds, cohortTypeIds }
     })
   }
 
@@ -180,10 +234,11 @@ export default function LecturerProfilePage () {
       !form.facultyIds.length ||
       !form.departmentIds.length ||
       !form.programmeIds.length ||
-      !form.unitIds.length
+      !form.unitIds.length ||
+      !form.cohortTypeIds.length
     ) {
       setMessage(
-        'Select at least one faculty, department, programme, and unit.'
+        'Select at least one faculty, department, programme, unit, and cohort type.'
       )
       return
     }
@@ -192,7 +247,8 @@ export default function LecturerProfilePage () {
       facultyIds: form.facultyIds.map(Number),
       departmentIds: form.departmentIds.map(Number),
       programmeIds: form.programmeIds.map(Number),
-      unitIds: form.unitIds.map(Number)
+      unitIds: form.unitIds.map(Number),
+      cohortTypeIds: form.cohortTypeIds.map(Number)
     })
   }
 
@@ -218,9 +274,6 @@ export default function LecturerProfilePage () {
     </fieldset>
   )
 
-  if (profileLoading || optionsLoading)
-    return <div className='content-panel'>Loading academic profile…</div>
-
   return (
     <div className='page-shell'>
       <div className='page-header'>
@@ -228,7 +281,8 @@ export default function LecturerProfilePage () {
           <p className='eyebrow'>Teaching profile</p>
           <h1>My academic details</h1>
           <p>
-            Choose the faculties, departments, programmes, and units you teach.
+            Choose the faculties, departments, programmes, units, and cohort
+            types you teach.
             Unchecking a parent automatically removes its dependent selections.
           </p>
         </div>
@@ -290,6 +344,19 @@ export default function LecturerProfilePage () {
                   unitIds: checked
                     ? [...new Set([...current.unitIds, String(id)])]
                     : current.unitIds.filter(value => value !== String(id))
+                })),
+              'Select a programme first.'
+            )}
+            {checkboxGroup(
+              'Cohort types',
+              availableCohortTypes,
+              form.cohortTypeIds,
+              (id, checked) =>
+                setForm(current => ({
+                  ...current,
+                  cohortTypeIds: checked
+                    ? [...new Set([...current.cohortTypeIds, String(id)])]
+                    : current.cohortTypeIds.filter(value => value !== String(id))
                 })),
               'Select a programme first.'
             )}

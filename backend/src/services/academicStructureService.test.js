@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { normalizeAcademicYearPayload } from './academicStructureService.js'
+import {
+  normalizeAcademicYearPayload,
+  normalizeSemesterPayload
+} from './academicStructureService.js'
 
 test('academic-year payload accepts legacy start_year and end_year fields', () => {
   const payload = {
@@ -29,4 +32,11 @@ test('semester payload accepts legacy semester_number fields', () => {
     number: 2,
     academic_year_id: 1
   })
+})
+
+test('semester payload accepts a reusable semester type ID', () => {
+  assert.deepEqual(
+    normalizeSemesterPayload({ semesterTypeId: 3, academic_year_id: 8 }),
+    { semester_type_id: 3, academic_year_id: 8 }
+  )
 })

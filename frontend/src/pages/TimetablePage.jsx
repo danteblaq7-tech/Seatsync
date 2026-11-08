@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { io } from 'socket.io-client'
 import { api } from '../api/client'
-import { weekdayFromDateOnly } from '../utils/dateOnly'
+import { formatDateOnly, weekdayFromDateOnly } from '../utils/dateOnly'
 import { semesterLabel } from '../utils/semesterLabel.js'
 import { useAuth } from '../context/AuthContext'
 import ScrollableSelect from '../components/ScrollableSelect'
 import usePendingScheduleDrafts from '../hooks/usePendingScheduleDrafts'
+import { SOCKET_BASE_URL } from '../config.js'
 
 const toArray = value => {
   if (Array.isArray(value)) return value
@@ -121,6 +123,11 @@ const timeToMinutes = value => {
 }
 
 const dateOnly = value => String(value || '').slice(0, 10)
+const localDateOnly = value =>
+  `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(
+    2,
+    '0'
+  )}-${String(value.getDate()).padStart(2, '0')}`
 const eventIdentity = event =>
   String(
     event.id ??
@@ -208,6 +215,9 @@ export default function TimetablePage () {
   const [selectedLecturer, setSelectedLecturer] = useState('all')
   const [selectedVenue, setSelectedVenue] = useState('all')
   const [selectedEventType, setSelectedEventType] = useState('all')
+  const [filterStartTime, setFilterStartTime] = useState('')
+  const [filterEndTime, setFilterEndTime] = useState('')
+  const [currentDate, setCurrentDate] = useState(() => localDateOnly(new Date()))
   const [form, setForm] = useState(emptyEntry)
   const [formError, setFormError] = useState('')
   const [capacityWarning, setCapacityWarning] = useState(null)
@@ -238,6 +248,32 @@ export default function TimetablePage () {
   }, [editingDraftId, editingEntryId, showForm])
   const [selectedEvent, setSelectedEvent] = useState(null)
 
+  useEffect(() => {
+    const socket = io(SOCKET_BASE_URL, { transports: ['websocket'] })
+    socket.on('timetable:changed', () => {
+      queryClient.invalidateQueries({ queryKey: ['timetable'] })
+      queryClient.invalidateQueries({ queryKey: ['timetable-exams'] })
+      queryClient.invalidateQueries({
+        queryKey: ['timetable-venue-availability']
+      })
+    })
+    socket.on('timetable:override_created', () => {
+      queryClient.invalidateQueries({ queryKey: ['timetable'] })
+      queryClient.invalidateQueries({
+        queryKey: ['makeup-venue-availability']
+      })
+      queryClient.invalidateQueries({
+        queryKey: ['timetable-venue-availability']
+      })
+    })
+    return () => socket.disconnect()
+  }, [queryClient])
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentDate(localDateOnly(new Date())), 60000)
+    return () => clearInterval(timer)
+  }, [])
+
   const {
     data: timetableData = [],
     isLoading,
@@ -265,6 +301,30 @@ export default function TimetablePage () {
       return toArray(response)
     }
   })
+
+  const semestersForEntry = useMemo(
+    () =>
+      semesters.filter(
+        semester =>
+          String(semester.academic_year_id ?? semester.academicYearId) ===
+          String(form.academic_year_id)
+      ),
+    [form.academic_year_id, semesters]
+  )
+  const selectedEntrySemester = semesters.find(
+    semester => String(semester.id) === String(form.semester_id)
+  )
+  const semestersForFilter = useMemo(
+    () =>
+      selectedAcademicYear === 'all'
+        ? semesters
+        : semesters.filter(
+            semester =>
+              String(semester.academic_year_id ?? semester.academicYearId) ===
+              String(selectedAcademicYear)
+          ),
+    [selectedAcademicYear, semesters]
+  )
 
   const { data: programmes = [] } = useQuery({
     queryKey: ['timetable-programmes'],
@@ -334,6 +394,86 @@ export default function TimetablePage () {
       0
     )
 
+  const selectedEntryUnit = courses.find(
+    unit => String(unit.id) === String(form.course_id)
+  )
+  const { data: eligibleCohorts = [] } = useQuery({
+    queryKey: [
+      'eligible-cohorts',
+      form.academic_year_id,
+      form.semester_id,
+      form.course_id,
+      form.programme_ids
+    ],
+    queryFn: async () => {
+      const programmeIds = Array.from(new Set(form.programme_ids))
+      const studyYear = Number(
+        selectedEntryUnit?.year_level ?? selectedEntryUnit?.yearLevel
+      )
+      const results = await Promise.all(
+        programmeIds.map(async programmeId => {
+          const params = new URLSearchParams({
+            academicYearId: form.academic_year_id,
+            semesterId: form.semester_id,
+            programmeId,
+            studyYear: String(studyYear)
+          })
+          return toArray(
+            await api.get(`/api/academic/eligible-cohorts?${params}`)
+          )
+        })
+      )
+      return Array.from(
+        new Map(
+          results.flat().map(cohort => [String(cohort.id), cohort])
+        ).values()
+      )
+    },
+    enabled: Boolean(
+      form.academic_year_id &&
+        form.semester_id &&
+        form.course_id &&
+        form.programme_ids.length &&
+        selectedEntryUnit
+    )
+  })
+
+  const formCohortIds = idList(form.cohort_ids, form.cohort_id)
+  const formVenueCapacity = eligibleCohorts
+    .filter(cohort => formCohortIds.includes(String(cohort.id)))
+    .reduce(
+      (total, cohort) =>
+        total + Number(cohort.student_count ?? cohort.studentCount ?? 0),
+      0
+    )
+  const { data: availableTimetableVenues = [] } = useQuery({
+    queryKey: [
+      'timetable-venue-availability',
+      form.day_of_week,
+      form.start_time,
+      form.end_time,
+      formVenueCapacity,
+      editingEntryId
+    ],
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        day: fullDayNames[weekdayKey(form.day_of_week)] || form.day_of_week,
+        startTime: form.start_time,
+        endTime: form.end_time,
+        requiredCapacity: String(formVenueCapacity),
+        excludeTimetableEntryId: String(editingEntryId || '')
+      })
+      return toArray(await api.get(`/api/timetable/availability?${params}`))
+    },
+    enabled: Boolean(
+      showForm &&
+        form.day_of_week &&
+        form.start_time &&
+        form.end_time &&
+        timeToMinutes(form.end_time) > timeToMinutes(form.start_time)
+    )
+  })
+
   const { data: availableMakeupVenues = [] } = useQuery({
     queryKey: [
       'makeup-venue-availability',
@@ -365,6 +505,22 @@ export default function TimetablePage () {
       ...timetableData,
       ...exams
         .filter(exam => {
+          const semester = semesters.find(
+            item =>
+              String(item.id) ===
+              String(exam.semester_id ?? exam.semesterId ?? '')
+          )
+          const semesterEndDate = dateOnly(
+            semester?.end_date ?? semester?.endDate
+          )
+          const examDate = dateOnly(exam.exam_date ?? exam.examDate)
+          return (
+            !semesterEndDate ||
+            currentDate <= semesterEndDate ||
+            examDate >= currentDate
+          )
+        })
+        .filter(exam => {
           if (!(user?.roles || []).includes('LECTURER')) return true
           const lecturer = lecturers.find(
             item => Number(item.user_id ?? item.userId) === Number(user.id)
@@ -380,7 +536,7 @@ export default function TimetablePage () {
           event_type: 'EXAM'
         }))
     ],
-    [exams, lecturers, timetableData, user]
+    [currentDate, exams, lecturers, semesters, timetableData, user]
   )
 
   const eligibleDepartments = departments.filter(department =>
@@ -395,13 +551,6 @@ export default function TimetablePage () {
         String(programme.department_id ?? programme.departmentId)
       )
   )
-  const eligibleCohorts = cohorts.filter(
-    cohort =>
-      form.programme_ids.length === 0 ||
-      form.programme_ids.includes(
-        String(cohort.programme_id ?? cohort.programmeId)
-      )
-  )
   const eligibleUnits = courses.filter(unit => {
     const programmeIds = idList(
       unit.programmeIds ?? unit.programme_ids,
@@ -409,19 +558,33 @@ export default function TimetablePage () {
     )
     const semesterMatch =
       !form.semester_id ||
-      String(unit.semester_id ?? unit.semesterId) === String(form.semester_id)
+      Number(unit.semester_type_id ?? unit.semesterTypeId) ===
+        Number(
+          selectedEntrySemester?.semester_type_id ??
+            selectedEntrySemester?.semesterTypeId
+        )
     const programmeMatch =
       !form.programme_ids.length ||
       programmeIds.some(id => form.programme_ids.includes(id))
     return semesterMatch && programmeMatch
   })
-  const eligibleLecturers = lecturers.filter(
-    lecturer =>
-      !form.programme_ids.length ||
-      (lecturer.programmeIds || []).some(id =>
-        form.programme_ids.includes(String(id))
-      )
+  const eligibleLecturers = useMemo(
+    () =>
+      lecturers.filter(lecturer => {
+        const unitIds = lecturer.unitIds ?? lecturer.unit_ids ?? []
+        return (
+          Boolean(form.course_id) &&
+          unitIds.some(id => String(id) === String(form.course_id))
+        )
+      }),
+    [form.course_id, lecturers]
   )
+
+  const eligibleLecturerId = eligibleLecturers.some(
+    lecturer => String(lecturer.id ?? lecturer.email) === String(form.lecturer_id)
+  )
+    ? form.lecturer_id
+    : ''
   const courseNameMap = useMemo(
     () =>
       Object.fromEntries(
@@ -452,6 +615,19 @@ export default function TimetablePage () {
       ),
     [venues]
   )
+  const venueDisplayName = venue => {
+    const venueId = venue.id ?? venue.venue_id ?? venue.venueId
+    const listedVenue = venues.find(item => String(item.id) === String(venueId))
+    const code =
+      venue.code ?? venue.venueCode ?? venue.venue_code ?? listedVenue?.code
+    const name =
+      venue.name ??
+      venue.venueName ??
+      venue.venue_name ??
+      listedVenue?.name ??
+      listedVenue?.venue_name
+    return `${code ? `${code} · ` : ''}${name || 'Venue'}`
+  }
   const unitNameMap = useMemo(
     () =>
       Object.fromEntries(
@@ -475,7 +651,15 @@ export default function TimetablePage () {
       event.event_type || event.eventType || 'LECTURE'
     ).toLowerCase()}`
 
-  const venueOptions = venues.map(venue => ({
+  const venueOptions = (
+    showForm &&
+    form.day_of_week &&
+    form.start_time &&
+    form.end_time &&
+    timeToMinutes(form.end_time) > timeToMinutes(form.start_time)
+      ? availableTimetableVenues
+      : venues.filter(venue => venue.status === 'ACTIVE')
+  ).map(venue => ({
     value: venue.id,
     label: `${venue.code ? `${venue.code} · ` : ''}${
       venue.name || venue.venue_name
@@ -509,7 +693,9 @@ export default function TimetablePage () {
   const eventVenues = event =>
     event.event_type === 'EXAM'
       ? (event.venueDetails || [])
-          .map(venue => `${venue.name} (${venue.capacity} allocated)`)
+          .map(
+            venue => `${venueDisplayName(venue)} (${venue.capacity} allocated)`
+          )
           .join(', ')
       : venueNameMap[String(event.venue_id ?? event.venueId)] || 'Venue'
 
@@ -520,10 +706,12 @@ export default function TimetablePage () {
         0
       )
       return `${event.venueDetails
-        .map(venue => `${venue.name} (${venue.capacity} allocated)`)
+        .map(
+          venue => `${venueDisplayName(venue)} (${venue.capacity} allocated)`
+        )
         .join(', ')} · Total allocated: ${total}`
     }
-    return details.venue?.name || ''
+    return details.venue ? venueDisplayName(details.venue) : ''
   }
 
   const createEntryMutation = useMutation({
@@ -664,6 +852,18 @@ export default function TimetablePage () {
       const matchesProgramme =
         selectedProgramme === 'all' ||
         allProgrammeIds.includes(String(selectedProgramme))
+      const eventStart = timeToMinutes(item.start_time || item.startTime)
+      const eventEnd = timeToMinutes(item.end_time || item.endTime)
+      const filterStartMinutes = timeToMinutes(filterStartTime)
+      const filterEndMinutes = timeToMinutes(filterEndTime)
+      const validTimeRange =
+        !filterStartTime ||
+        !filterEndTime ||
+        filterStartMinutes < filterEndMinutes
+      const matchesStartTime =
+        !filterStartTime || eventEnd > filterStartMinutes
+      const matchesEndTime =
+        !filterEndTime || eventStart < filterEndMinutes
 
       return (
         matchesSearch &&
@@ -673,7 +873,10 @@ export default function TimetablePage () {
         matchesLecturer &&
         matchesVenue &&
         matchesEventType &&
-        matchesProgramme
+        matchesProgramme &&
+        validTimeRange &&
+        matchesStartTime &&
+        matchesEndTime
       )
     })
   }, [
@@ -689,6 +892,8 @@ export default function TimetablePage () {
     selectedSemester,
     selectedVenue,
     selectedEventType,
+    filterEndTime,
+    filterStartTime,
     scheduleRows,
     venueNameMap,
     unitNameMap
@@ -834,7 +1039,7 @@ export default function TimetablePage () {
       !form.academic_year_id ||
       !form.semester_id ||
       !form.course_id ||
-      !form.lecturer_id ||
+      !eligibleLecturerId ||
       !form.faculty_ids.length ||
       !form.department_ids.length ||
       !form.programme_ids.length ||
@@ -848,7 +1053,7 @@ export default function TimetablePage () {
       return
     }
 
-    const selectedCohorts = cohorts.filter(cohort =>
+    const selectedCohorts = eligibleCohorts.filter(cohort =>
       form.cohort_ids.includes(String(cohort.id))
     )
     const expectedStudents = selectedCohorts.reduce(
@@ -870,12 +1075,12 @@ export default function TimetablePage () {
           ?.name || `Unit ${form.course_id}`,
       programme_ids: form.programme_ids.map(Number),
       cohort_ids: form.cohort_ids.map(Number),
+      lecturer_id: Number(eligibleLecturerId),
       cohort_names: selectedCohorts.map(cohort => ({
         id: Number(cohort.id),
         name: cohort.name
       })),
       cohort_id: Number(form.cohort_ids[0]) || null,
-      lecturer_id: Number(form.lecturer_id),
       venue_id: Number(form.venue_id),
       venue_name:
         selectedVenue?.name ||
@@ -1064,7 +1269,9 @@ export default function TimetablePage () {
         faculty_ids,
         department_ids,
         programme_ids,
-        cohort_ids: current.cohort_ids.filter(id => cohortSet.has(String(id))),
+        cohort_ids: unitAllowed
+          ? current.cohort_ids.filter(id => cohortSet.has(String(id)))
+          : [],
         course_id: unitAllowed ? current.course_id : ''
       }
     })
@@ -1125,15 +1332,7 @@ export default function TimetablePage () {
       return {
         ...current,
         programme_ids: programmeIds,
-        cohort_ids: current.cohort_ids.filter(id =>
-          cohorts.some(
-            cohort =>
-              String(cohort.id) === String(id) &&
-              programmeIds.includes(
-                String(cohort.programme_id ?? cohort.programmeId)
-              )
-          )
-        ),
+        cohort_ids: [],
         course_id:
           !current.course_id ||
           selectedUnitProgrammes.some(id => programmeIds.includes(id))
@@ -1335,7 +1534,12 @@ export default function TimetablePage () {
                   onChange={event =>
                     setForm(current => ({
                       ...current,
-                      academic_year_id: event.target.value
+                      academic_year_id: event.target.value,
+                      semester_id: '',
+                      programme_ids: [],
+                      cohort_ids: [],
+                      course_id: '',
+                      lecturer_id: ''
                     }))
                   }
                 >
@@ -1355,6 +1559,7 @@ export default function TimetablePage () {
                 Semester
                 <select
                   value={form.semester_id}
+                  disabled={!form.academic_year_id}
                   onChange={event =>
                     setForm(current => ({
                       ...current,
@@ -1365,8 +1570,12 @@ export default function TimetablePage () {
                     }))
                   }
                 >
-                  <option value=''>Select semester</option>
-                  {(semesters || []).map(semester => (
+                  <option value=''>
+                    {form.academic_year_id
+                      ? 'Select semester'
+                      : 'Select academic year first'}
+                  </option>
+                  {semestersForEntry.map(semester => (
                     <option
                       key={semester.id ?? semester.name}
                       value={semester.id ?? semester.name}
@@ -1459,7 +1668,9 @@ export default function TimetablePage () {
                   onChange={event =>
                     setForm(current => ({
                       ...current,
-                      course_id: event.target.value
+                      course_id: event.target.value,
+                      lecturer_id: '',
+                      cohort_ids: []
                     }))
                   }
                 >
@@ -1483,8 +1694,8 @@ export default function TimetablePage () {
               <label>
                 Lecturer
                 <select
-                  value={form.lecturer_id}
-                  disabled={!form.programme_ids.length}
+                  value={eligibleLecturerId}
+                  disabled={!form.course_id}
                   onChange={event =>
                     setForm(current => ({
                       ...current,
@@ -1493,9 +1704,7 @@ export default function TimetablePage () {
                   }
                 >
                   <option value=''>
-                    {form.programme_ids.length
-                      ? 'Select lecturer'
-                      : 'Select programme first'}
+                    {form.course_id ? 'Select lecturer' : 'Select unit first'}
                   </option>
                   {eligibleLecturers.map(lecturer => (
                     <option
@@ -1505,54 +1714,11 @@ export default function TimetablePage () {
                       {lecturer.name || lecturer.full_name || lecturer.email}
                     </option>
                   ))}
+                  {form.course_id && !eligibleLecturers.length && (
+                    <option disabled>No lecturers assigned to this unit</option>
+                  )}
                 </select>
               </label>
-
-              <label>
-                Venue
-                <ScrollableSelect
-                  value={form.venue_id}
-                  options={venueOptions}
-                  placeholder='Select venue'
-                  ariaLabel='Select venue'
-                  onChange={value =>
-                    setForm(current => ({ ...current, venue_id: value }))
-                  }
-                />
-              </label>
-
-              <fieldset className='full-width checkbox-fieldset'>
-                <legend>Cohorts</legend>
-                <div className='checkbox-list'>
-                  {eligibleCohorts.map(cohort => (
-                    <label key={cohort.id} className='checkbox-option'>
-                      <input
-                        type='checkbox'
-                        disabled={!form.programme_ids.length}
-                        checked={form.cohort_ids.includes(String(cohort.id))}
-                        onChange={event =>
-                          setForm(current => ({
-                            ...current,
-                            cohort_ids: event.target.checked
-                              ? [...current.cohort_ids, String(cohort.id)]
-                              : current.cohort_ids.filter(
-                                  id => id !== String(cohort.id)
-                                )
-                          }))
-                        }
-                      />
-                      <span>
-                        {cohort.name} (
-                        {cohort.student_count ?? cohort.studentCount ?? 0}{' '}
-                        students)
-                      </span>
-                    </label>
-                  ))}
-                  {!form.programme_ids.length && (
-                    <small>Select a programme first.</small>
-                  )}
-                </div>
-              </fieldset>
 
               <label>
                 Day
@@ -1618,6 +1784,63 @@ export default function TimetablePage () {
                   }
                 />
               </label>
+
+              <label>
+                Venue
+                <ScrollableSelect
+                  value={form.venue_id}
+                  options={venueOptions}
+                  placeholder='Select venue'
+                  ariaLabel='Select venue'
+                  onChange={value =>
+                    setForm(current => ({ ...current, venue_id: value }))
+                  }
+                />
+              </label>
+
+              <fieldset className='full-width checkbox-fieldset'>
+                <legend>Cohorts</legend>
+                <div className='checkbox-list'>
+                  {eligibleCohorts.map(cohort => (
+                    <label key={cohort.id} className='checkbox-option'>
+                      <input
+                        type='checkbox'
+                        disabled={!form.programme_ids.length}
+                        checked={form.cohort_ids.includes(String(cohort.id))}
+                        onChange={event =>
+                          setForm(current => ({
+                            ...current,
+                            cohort_ids: event.target.checked
+                              ? [...current.cohort_ids, String(cohort.id)]
+                              : current.cohort_ids.filter(
+                                  id => id !== String(cohort.id)
+                                )
+                          }))
+                        }
+                      />
+                      <span>
+                        {cohort.name}
+                        {cohort.cohort_type_name
+                          ? ` · ${cohort.cohort_type_name}`
+                          : ''}{' '}
+                        (
+                        {cohort.student_count ?? cohort.studentCount ?? 0}{' '}
+                        students)
+                      </span>
+                    </label>
+                  ))}
+                  {!form.programme_ids.length && (
+                    <small>Select a programme first.</small>
+                  )}
+                  {form.course_id && !eligibleCohorts.length && (
+                    <small>
+                      No cohort has a progression record matching this unit and
+                      academic period.
+                    </small>
+                  )}
+                </div>
+              </fieldset>
+
             </div>
 
             {formError && (
@@ -1674,7 +1897,10 @@ export default function TimetablePage () {
           />
           <select
             value={selectedAcademicYear}
-            onChange={event => setSelectedAcademicYear(event.target.value)}
+            onChange={event => {
+              setSelectedAcademicYear(event.target.value)
+              setSelectedSemester('all')
+            }}
           >
             <option value='all'>Academic year</option>
             {(academicYears || []).map(year => (
@@ -1688,7 +1914,7 @@ export default function TimetablePage () {
             onChange={event => setSelectedSemester(event.target.value)}
           >
             <option value='all'>Semester</option>
-            {(semesters || []).map(semester => (
+            {semestersForFilter.map(semester => (
               <option
                 key={semester.id ?? semester.name}
                 value={semester.id ?? semester.name}
@@ -1769,6 +1995,24 @@ export default function TimetablePage () {
             <option value='SEMINAR'>Seminars</option>
             <option value='LAB'>Labs</option>
           </select>
+          <label className='timetable-time-filter'>
+            From
+            <input
+              type='time'
+              value={filterStartTime}
+              onChange={event => setFilterStartTime(event.target.value)}
+              aria-label='Filter timetable from start time'
+            />
+          </label>
+          <label className='timetable-time-filter'>
+            Until
+            <input
+              type='time'
+              value={filterEndTime}
+              onChange={event => setFilterEndTime(event.target.value)}
+              aria-label='Filter timetable until end time'
+            />
+          </label>
         </div>
       </section>
 
@@ -2070,6 +2314,13 @@ export default function TimetablePage () {
       {selectedEvent &&
         (() => {
           const details = eventDetails(selectedEvent)
+          const selectedSemester = semesters.find(
+            item =>
+              String(item.id) ===
+              String(
+                selectedEvent.semester_id ?? selectedEvent.semesterId ?? ''
+              )
+          )
           return (
             <div
               className='profile-modal-backdrop'
@@ -2129,6 +2380,30 @@ export default function TimetablePage () {
                       {selectedEvent.day_of_week || selectedEvent.dayOfWeek}
                     </dd>
                   </div>
+                  {String(selectedEvent.id).startsWith('exam-') && (
+                    <>
+                      <div>
+                        <dt>Exam date</dt>
+                        <dd>
+                          {selectedEvent.exam_date
+                            ? formatDateOnly(selectedEvent.exam_date)
+                            : 'TBA'}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Semester ends</dt>
+                        <dd>
+                          {selectedSemester?.end_date ??
+                          selectedSemester?.endDate
+                            ? formatDateOnly(
+                                selectedSemester.end_date ??
+                                  selectedSemester.endDate
+                              )
+                            : 'TBA'}
+                        </dd>
+                      </div>
+                    </>
+                  )}
                   <div>
                     <dt>Time</dt>
                     <dd>

@@ -18,6 +18,11 @@ import {
   listCourses
 } from '../services/academicStructureService.js'
 import { createAuditLog } from '../services/security/securityService.js'
+import { emitSocketEvent } from '../socket/socketEvents.js'
+import {
+  getStudentAcademicProfile,
+  updateStudentAcademicProfile
+} from '../services/auth/studentAcademicProfileService.js'
 
 export const registrationOptions = async (req, res) => {
   res.json({
@@ -36,9 +41,49 @@ export const profileStatus = async (req, res) => {
   res.json({ data: await getProfileStatus(req.user.id) })
 }
 
+export const studentAcademicProfile = async (req, res) => {
+  const roles = Array.isArray(req.user?.roles)
+    ? req.user.roles
+    : req.user?.roles
+      ? [req.user.roles]
+      : []
+  if (!roles.some(role => ['STUDENT', 'CLASS_REP'].includes(role))) {
+    return res.status(403).json({ message: 'Student profile access required.' })
+  }
+  return res.json({
+    data: await getStudentAcademicProfile(req.user.id, roles.includes('CLASS_REP') ? 'CLASS_REP' : 'STUDENT')
+  })
+}
+
+export const updateStudentProfile = async (req, res) => {
+  const roles = Array.isArray(req.user?.roles)
+    ? req.user.roles
+    : req.user?.roles
+      ? [req.user.roles]
+      : []
+  const role = roles.includes('CLASS_REP') ? 'CLASS_REP' : 'STUDENT'
+  try {
+    const data = await updateStudentAcademicProfile(req.user.id, role, req.body)
+    emitSocketEvent('academic:updated', {
+      entity: 'academic_profile',
+      userId: req.user.id
+    })
+    return res.json({ data })
+  } catch (error) {
+    return res.status(400).json({
+      message: error.message || 'Unable to update academic profile.'
+    })
+  }
+}
+
 export const completeProfile = async (req, res) => {
   try {
-    res.json({ data: await completeAcademicProfile(req.user.id, req.body) })
+    const data = await completeAcademicProfile(req.user.id, req.body)
+    emitSocketEvent('academic:updated', {
+      entity: 'academic_profile',
+      userId: req.user.id
+    })
+    res.json({ data })
   } catch (error) {
     res.status(400).json({ message: error.message })
   }
@@ -64,6 +109,14 @@ export const updateLecturerProfile = async (req, res) => {
       newValues: data,
       ipAddress: req.ip,
       userAgent: req.get('user-agent')
+    })
+    emitSocketEvent('academic:updated', {
+      entity: 'lecturer_profile',
+      id: data.id
+    })
+    emitSocketEvent('timetable:changed', {
+      action: 'lecturer-profile-updated',
+      ids: [data.id]
     })
     return res.json({ data })
   } catch (error) {

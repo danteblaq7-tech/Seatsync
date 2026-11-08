@@ -5,7 +5,6 @@ import ConfirmActionModal from '../components/ConfirmActionModal'
 import PaginationControls from '../components/PaginationControls'
 import SearchableSelect from '../components/SearchableSelect'
 import { useAuth } from '../context/AuthContext'
-import { semesterLabel } from '../utils/semesterLabel.js'
 
 const toArray = value => {
   if (Array.isArray(value)) return value
@@ -18,7 +17,7 @@ const emptyUnit = {
   name: '',
   department_ids: [],
   programme_ids: [],
-  semester_id: '',
+  semester_type_id: '',
   year_level: 1,
   description: ''
 }
@@ -45,7 +44,7 @@ const toggleDepartment = (current, departmentId, checked, programmes) => {
     ...current,
     department_ids: departmentIds,
     programme_ids: programmeIds,
-    semester_id: '',
+    semester_type_id: '',
     year_level: 1
   }
 }
@@ -55,7 +54,7 @@ const toggleProgramme = (current, programmeId, checked) => ({
   programme_ids: checked
     ? Array.from(new Set([...current.programme_ids, String(programmeId)]))
     : current.programme_ids.filter(id => id !== String(programmeId)),
-  semester_id: checked ? current.semester_id : '',
+  semester_type_id: checked ? current.semester_type_id : '',
   year_level: checked ? current.year_level : 1
 })
 
@@ -137,14 +136,9 @@ export default function CoursesPage () {
     queryFn: async () => toArray(await api.get('/api/academic/programmes'))
   })
 
-  const { data: semesters = [] } = useQuery({
-    queryKey: ['unit-semesters'],
-    queryFn: async () => toArray(await api.get('/api/academic/semesters'))
-  })
-
-  const { data: academicYears = [] } = useQuery({
-    queryKey: ['unit-academic-years'],
-    queryFn: async () => toArray(await api.get('/api/academic/academic-years'))
+  const { data: semesterTypes = [] } = useQuery({
+    queryKey: ['academic-semester-types'],
+    queryFn: async () => toArray(await api.get('/api/academic/semester-types'))
   })
 
   const departmentNameMap = Object.fromEntries(
@@ -267,11 +261,11 @@ export default function CoursesPage () {
       !form.name ||
       !form.department_ids.length ||
       !form.programme_ids.length ||
-      !form.semester_id ||
+      !form.semester_type_id ||
       !form.year_level
     ) {
       setFormError(
-        'Unit code, name, department, programme, semester, and year are required.'
+        'Unit code, name, department, programme, semester type, and year are required.'
       )
       return
     }
@@ -280,7 +274,7 @@ export default function CoursesPage () {
       ...form,
       department_ids: form.department_ids.map(Number),
       programme_ids: form.programme_ids.map(Number),
-      semester_id: Number(form.semester_id) || null,
+      semester_type_id: Number(form.semester_type_id) || null,
       year_level: Number(form.year_level) || 1,
       is_active: true
     })
@@ -425,25 +419,25 @@ export default function CoursesPage () {
                 </span>
               </fieldset>
               <label className='selection-container'>
-                Semester offered
+                Semester type offered
                 <select
-                  value={form.semester_id}
+                  value={form.semester_type_id}
                   disabled={!form.programme_ids.length}
                   onChange={event =>
                     setForm(current => ({
                       ...current,
-                      semester_id: event.target.value
+                      semester_type_id: event.target.value
                     }))
                   }
                 >
                   <option value=''>
                     {form.programme_ids.length
-                      ? 'Select semester'
+                      ? 'Select semester type'
                       : 'Select programme first'}
                   </option>
-                  {semesters.map(semester => (
-                    <option key={semester.id} value={semester.id}>
-                      {semesterLabel(semester, academicYears)}
+                  {semesterTypes.map(type => (
+                    <option key={type.id} value={type.id}>
+                      {type.name} (Semester {type.number})
                     </option>
                   ))}
                 </select>
@@ -452,7 +446,7 @@ export default function CoursesPage () {
                 Year offered
                 <select
                   value={form.year_level}
-                  disabled={!form.semester_id}
+                  disabled={!form.semester_type_id}
                   onChange={event =>
                     setForm(current => ({
                       ...current,
@@ -674,8 +668,10 @@ export default function CoursesPage () {
                                       item.programme_id ?? item.programmeId
                                     ].filter(Boolean)
                                 ).map(String),
-                                semester_id: String(
-                                  item.semester_id ?? item.semesterId ?? ''
+                                semester_type_id: String(
+                                  item.semester_type_id ??
+                                    item.semesterTypeId ??
+                                    ''
                                 ),
                                 year_level:
                                   item.year_level ?? item.yearLevel ?? 1
@@ -785,10 +781,10 @@ export default function CoursesPage () {
                   !editForm.name ||
                   !editForm.department_ids.length ||
                   !editForm.programme_ids.length ||
-                  !editForm.semester_id
+                  !editForm.semester_type_id
                 ) {
                   setFormError(
-                    'Unit code, name, at least one department, at least one programme, and semester are required.'
+                    'Unit code, name, at least one department, at least one programme, and semester type are required.'
                   )
                   return
                 }
@@ -804,7 +800,7 @@ export default function CoursesPage () {
                     ...editForm,
                     department_ids: editForm.department_ids.map(Number),
                     programme_ids: editForm.programme_ids.map(Number),
-                    semester_id: Number(editForm.semester_id),
+                    semester_type_id: Number(editForm.semester_type_id),
                     year_level: Number(editForm.year_level) || 1
                   }
                 })
@@ -928,20 +924,20 @@ export default function CoursesPage () {
                   </div>
                 </fieldset>
                 <label>
-                  Semester
+                  Semester type
                   <select
-                    value={editForm.semester_id}
+                    value={editForm.semester_type_id}
                     onChange={event =>
                       setEditForm(current => ({
                         ...current,
-                        semester_id: event.target.value
+                        semester_type_id: event.target.value
                       }))
                     }
                   >
-                    <option value=''>Select semester</option>
-                    {semesters.map(item => (
+                    <option value=''>Select semester type</option>
+                    {semesterTypes.map(item => (
                       <option key={item.id} value={item.id}>
-                        {semesterLabel(item, academicYears)}
+                        {item.name} (Semester {item.number})
                       </option>
                     ))}
                   </select>

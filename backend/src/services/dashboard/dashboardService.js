@@ -25,6 +25,107 @@ const normalizeDay = value =>
     .slice(0, 3)
     .toUpperCase()
 
+const timeInMinutes = value => {
+  const [hour, minute] = String(value || '00:00').split(':').map(Number)
+  return hour * 60 + minute
+}
+
+const isCurrentTime = (start, end, currentTime) =>
+  timeInMinutes(currentTime) >= timeInMinutes(start) &&
+  timeInMinutes(currentTime) < timeInMinutes(end)
+
+const getLiveVenueSummary = async () => {
+  const current = (
+    await query(
+      `SELECT DATE_FORMAT(CURDATE(), '%Y-%m-%d') AS today,
+        DAYNAME(CURDATE()) AS day_name,
+        TIME_FORMAT(CURTIME(), '%H:%i') AS current_clock`
+    )
+  )[0]
+  const [venues, events, overrides, examVenues, blockedVenues] =
+    await Promise.all([
+      query('SELECT id, code, name, capacity, status FROM venues ORDER BY name'),
+      query(
+        `SELECT id, venue_id, day_of_week, start_time, end_time
+         FROM timetable_entries WHERE status = 'SCHEDULED'`
+      ),
+      query(
+        `SELECT so.id, so.timetable_entry_id, so.new_venue_id,
+            TIME_FORMAT(so.new_start_time, '%H:%i') AS new_start_time,
+            TIME_FORMAT(so.new_end_time, '%H:%i') AS new_end_time,
+            DATE_FORMAT(so.effective_date, '%Y-%m-%d') AS effective_date,
+            u.code AS unit_code, u.name AS unit_name,
+            v.name AS venue_name, v.code AS venue_code
+         FROM schedule_overrides so
+         JOIN timetable_entries te ON te.id = so.timetable_entry_id
+         JOIN units u ON u.id = te.unit_id
+         JOIN venues v ON v.id = so.new_venue_id
+         WHERE so.effective_date >= ? AND so.status = 'APPROVED'`,
+        [current.today]
+      ),
+      query(
+        `SELECT DISTINCT eva.venue_id
+         FROM exam_venue_allocations eva
+         JOIN exams e ON e.id = eva.exam_id
+         WHERE e.exam_date = ? AND e.status = 'SCHEDULED'
+           AND e.start_time <= ? AND e.end_time > ?`,
+        [current.today, current.current_clock, current.current_clock]
+      ),
+      query(
+        `SELECT DISTINCT venue_id FROM venue_blocks
+         WHERE status = 'ACTIVE' AND start_datetime <= NOW() AND end_datetime > NOW()`
+      )
+    ])
+  const todaysOverrides = overrides.filter(
+    override => override.effective_date === current.today
+  )
+  const appliedEntryIds = new Set(
+    todaysOverrides.map(override => Number(override.timetable_entry_id))
+  )
+  const occupiedIds = new Set(
+    events
+      .filter(
+        event =>
+          normalizeDay(event.day_of_week) === normalizeDay(current.day_name) &&
+          !appliedEntryIds.has(Number(event.id)) &&
+          isCurrentTime(event.start_time, event.end_time, current.current_clock)
+      )
+      .map(event => Number(event.venue_id))
+  )
+  todaysOverrides
+    .filter(override =>
+      isCurrentTime(
+        override.new_start_time,
+        override.new_end_time,
+        current.current_clock
+      )
+    )
+    .forEach(override => occupiedIds.add(Number(override.new_venue_id)))
+  examVenues.forEach(venue => occupiedIds.add(Number(venue.venue_id)))
+  blockedVenues.forEach(venue => occupiedIds.add(Number(venue.venue_id)))
+
+  const availableVenues = venues.filter(
+    venue => venue.status === 'ACTIVE' && !occupiedIds.has(Number(venue.id))
+  )
+  const occupiedVenues = venues.filter(venue =>
+    occupiedIds.has(Number(venue.id))
+  )
+  const activeMakeupClasses = overrides
+    .filter(
+      override =>
+        override.effective_date > current.today ||
+        (override.effective_date === current.today &&
+          timeInMinutes(override.new_end_time) >
+            timeInMinutes(current.current_clock))
+    )
+    .map(override => ({
+      ...override,
+      value: `${override.effective_date} · ${override.unit_code} ${override.unit_name} · ${override.venue_name} · ${override.new_start_time}-${override.new_end_time}`
+    }))
+
+  return { availableVenues, occupiedVenues, activeMakeupClasses }
+}
+
 const getLecturerDashboard = async user => {
   const lecturer = (
     await query('SELECT id FROM lecturers WHERE user_id = ? LIMIT 1', [user.id])
@@ -42,7 +143,8 @@ const getLecturerDashboard = async user => {
         todaysClasses: [],
         upcomingClasses: [],
         venueAvailability: [],
-        occupiedVenues: []
+        occupiedVenues: [],
+        activeMakeupClasses: []
       }
     }
   }
@@ -107,73 +209,8 @@ const getLecturerDashboard = async user => {
     'SELECT COUNT(DISTINCT unit_id) AS total FROM lecturer_units WHERE lecturer_id = ?',
     [lecturer.id]
   )
-  const venues = await query(
-    'SELECT id, code, name, capacity, status FROM venues ORDER BY name'
-  )
-  const [campusEvents, campusOverrides, blockedVenues, examVenues] =
-    await Promise.all([
-      query(`SELECT id, venue_id, day_of_week, start_time, end_time
-           FROM timetable_entries WHERE status = 'SCHEDULED'`),
-      query(
-        `SELECT so.timetable_entry_id, so.new_venue_id, so.new_start_time, so.new_end_time
-           FROM schedule_overrides so
-          WHERE so.effective_date = ? AND so.status = 'APPROVED'`,
-        [todayDate]
-      ),
-      query(`SELECT DISTINCT venue_id FROM venue_blocks
-          WHERE status = 'ACTIVE' AND start_datetime <= NOW() AND end_datetime > NOW()`),
-      query(`SELECT DISTINCT eva.venue_id
-          FROM exam_venue_allocations eva JOIN exams e ON e.id = eva.exam_id
-          WHERE e.exam_date = CURDATE() AND e.status = 'SCHEDULED'
-            AND e.start_time <= CURTIME() AND e.end_time > CURTIME()`)
-    ])
-  const now = new Date()
-  const currentMinutes = now.getHours() * 60 + now.getMinutes()
-  const makeupEntryIds = new Set(
-    campusOverrides.map(item => Number(item.timetable_entry_id))
-  )
-  const venueEventsToday = [
-    ...campusEvents.filter(
-      event =>
-        normalizeDay(event.day_of_week) === today &&
-        !makeupEntryIds.has(Number(event.id))
-    ),
-    ...campusOverrides.map(item => ({
-      venue_id: item.new_venue_id,
-      start_time: item.new_start_time,
-      end_time: item.new_end_time
-    }))
-  ]
-  const occupiedIds = new Set(
-    venueEventsToday
-      .filter(event => {
-        const [startHour, startMinute] = String(event.start_time)
-          .split(':')
-          .map(Number)
-        const [endHour, endMinute] = String(event.end_time)
-          .split(':')
-          .map(Number)
-        return (
-          currentMinutes >= startHour * 60 + startMinute &&
-          currentMinutes < endHour * 60 + endMinute
-        )
-      })
-      .map(event => Number(event.venue_id))
-  )
-  for (const venue of blockedVenues) occupiedIds.add(Number(venue.venue_id))
-  for (const venue of examVenues) occupiedIds.add(Number(venue.venue_id))
-  const availableVenues = venues.filter(
-    venue => venue.status === 'ACTIVE' && !occupiedIds.has(Number(venue.id))
-  )
-  const occupiedVenues = venues.filter(venue =>
-    occupiedIds.has(Number(venue.id))
-  )
-  const upcomingChanges = await query(
-    `SELECT COUNT(*) AS total FROM schedule_overrides so
-     JOIN timetable_entries te ON te.id = so.timetable_entry_id
-     WHERE te.lecturer_id = ? AND so.status = 'APPROVED' AND so.effective_date >= CURDATE()`,
-    [lecturer.id]
-  )
+  const { availableVenues, occupiedVenues, activeMakeupClasses } =
+    await getLiveVenueSummary()
   const entries = rows =>
     rows.map(event => ({
       ...event,
@@ -200,8 +237,8 @@ const getLecturerDashboard = async user => {
       { label: 'Available venues now', value: String(availableVenues.length) },
       { label: 'Occupied venues now', value: String(occupiedVenues.length) },
       {
-        label: 'Upcoming make-up classes',
-        value: String(Number(upcomingChanges[0]?.total || 0))
+        label: 'Active make-up classes',
+        value: String(activeMakeupClasses.length)
       }
     ],
     lists: {
@@ -214,7 +251,8 @@ const getLecturerDashboard = async user => {
       occupiedVenues: occupiedVenues.map(venue => ({
         ...venue,
         value: `${venue.code || ''} ${venue.name} · ${venue.capacity} seats`
-      }))
+      })),
+      activeMakeupClasses
     }
   }
 }
@@ -241,10 +279,9 @@ export const getDashboardSummary = async user => {
     )
   )[0]
 
+  const liveVenueSummary = await getLiveVenueSummary()
   const venueStats = (
-    await query(
-      'SELECT COUNT(*) AS total_venues, SUM(CASE WHEN status = "ACTIVE" THEN 1 ELSE 0 END) AS available_venues, SUM(CASE WHEN status != "ACTIVE" THEN 1 ELSE 0 END) AS occupied_venues FROM venues'
-    )
+    await query('SELECT COUNT(*) AS total_venues FROM venues')
   )[0]
 
   const safeArray = value => (Array.isArray(value) ? value : [])
@@ -252,12 +289,6 @@ export const getDashboardSummary = async user => {
   const timetableStats = (
     await query(
       'SELECT COUNT(*) AS active_entries FROM timetable_entries WHERE status = "SCHEDULED"'
-    )
-  )[0]
-
-  const overrideStats = (
-    await query(
-      'SELECT COUNT(*) AS pending_overrides FROM schedule_overrides WHERE status = "PENDING"'
     )
   )[0]
 
@@ -330,12 +361,6 @@ export const getDashboardSummary = async user => {
     )
   )
 
-  const venueAvailability = (
-    await query(
-      'SELECT COUNT(*) AS available_venues FROM venues WHERE status = "ACTIVE"'
-    )
-  )[0]
-
   const examList = await query(
     `SELECT e.*, e.unit_id AS course_id,
        c.name AS course_name, c.code AS course_code
@@ -352,20 +377,21 @@ export const getDashboardSummary = async user => {
 
   const baseSummary = {
     totalVenues: Number(venueStats?.total_venues || 0),
-    availableVenues: Number(venueStats?.available_venues || 0),
-    occupiedVenues: Number(venueStats?.occupied_venues || 0),
+    availableVenues: liveVenueSummary.availableVenues.length,
+    occupiedVenues: liveVenueSummary.occupiedVenues.length,
     activeTimetableEntries: Number(timetableStats?.active_entries || 0),
     currentAcademicYear: currentYear?.name || 'N/A',
     currentSemester: currentSemester?.name || 'N/A',
-    pendingScheduleOverrides: Number(overrideStats?.pending_overrides || 0),
+    activeMakeupClasses: liveVenueSummary.activeMakeupClasses,
     upcomingExams: Number(examStats?.upcoming_exams || 0),
     schedulingConflicts: Number(conflictStats?.scheduling_conflicts || 0),
     recentTimetableChanges: safeArray(recentEntries),
     recentAuditActivity: safeArray(recentAudit),
     todayClasses: safeArray(todayClasses),
     upcomingClasses: safeArray(upcomingClasses),
-    assignedVenues: Number(venueAvailability?.available_venues || 0),
-    venueAvailability: Number(venueAvailability?.available_venues || 0),
+    assignedVenues: liveVenueSummary.availableVenues.length,
+    venueAvailability: liveVenueSummary.availableVenues,
+    occupiedVenueList: liveVenueSummary.occupiedVenues,
     upcomingExamList: safeArray(examList),
     notifications: safeArray(notifications)
   }
@@ -393,8 +419,8 @@ export const getDashboardSummary = async user => {
           value: String(baseSummary.currentSemester)
         },
         {
-          label: 'Pending schedule overrides',
-          value: String(baseSummary.pendingScheduleOverrides)
+          label: 'Active make-up classes',
+          value: String(baseSummary.activeMakeupClasses.length)
         },
         { label: 'Upcoming exams', value: String(baseSummary.upcomingExams) },
         {
@@ -409,7 +435,16 @@ export const getDashboardSummary = async user => {
       lists: {
         recentTimetableChanges: baseSummary.recentTimetableChanges,
         recentAuditActivity: baseSummary.recentAuditActivity,
-        upcomingExams: examList
+        upcomingExams: examList,
+        venueAvailability: liveVenueSummary.availableVenues.map(venue => ({
+          ...venue,
+          value: `${venue.code || ''} ${venue.name} · ${venue.capacity} seats`
+        })),
+        occupiedVenues: liveVenueSummary.occupiedVenues.map(venue => ({
+          ...venue,
+          value: `${venue.code || ''} ${venue.name} · ${venue.capacity} seats`
+        })),
+        activeMakeupClasses: baseSummary.activeMakeupClasses
       }
     }
   }
@@ -426,8 +461,8 @@ export const getDashboardSummary = async user => {
           value: String(baseSummary.availableVenues)
         },
         {
-          label: 'Pending temporary changes',
-          value: String(baseSummary.pendingScheduleOverrides)
+          label: 'Active make-up classes',
+          value: String(baseSummary.activeMakeupClasses.length)
         },
         {
           label: 'Recent timetable changes',
@@ -437,9 +472,10 @@ export const getDashboardSummary = async user => {
       lists: {
         todaysClasses: todayClasses,
         upcomingClasses,
-        pendingTemporaryChanges: baseSummary.recentTimetableChanges,
         recentTimetableChanges: baseSummary.recentTimetableChanges,
-        venueAvailability: baseSummary.availableVenues
+        venueAvailability: liveVenueSummary.availableVenues,
+        occupiedVenues: liveVenueSummary.occupiedVenues,
+        activeMakeupClasses: baseSummary.activeMakeupClasses
       }
     }
   }
@@ -455,8 +491,8 @@ export const getDashboardSummary = async user => {
         { label: "Today's classes", value: String(todayClasses.length) },
         { label: 'Upcoming classes', value: String(upcomingClasses.length) },
         {
-          label: 'Venue changes',
-          value: String(baseSummary.pendingScheduleOverrides)
+          label: 'Active make-up classes',
+          value: String(baseSummary.activeMakeupClasses.length)
         },
         { label: 'Upcoming exams', value: String(baseSummary.upcomingExams) },
         { label: 'Notifications', value: String(notifications.length) }
@@ -465,7 +501,7 @@ export const getDashboardSummary = async user => {
         cohortTimetable: baseSummary.recentTimetableChanges,
         todaysClasses: todayClasses,
         upcomingClasses,
-        venueChanges: baseSummary.recentTimetableChanges,
+        activeMakeupClasses: baseSummary.activeMakeupClasses,
         upcomingExams: examList,
         notifications
       }
@@ -491,6 +527,15 @@ export const getDashboardSummary = async user => {
       upcomingClasses,
       recentTimetableChanges: baseSummary.recentTimetableChanges,
       upcomingExams: examList,
+      venueAvailability: liveVenueSummary.availableVenues.map(venue => ({
+        ...venue,
+        value: `${venue.code || ''} ${venue.name} · ${venue.capacity} seats`
+      })),
+      occupiedVenues: liveVenueSummary.occupiedVenues.map(venue => ({
+        ...venue,
+        value: `${venue.code || ''} ${venue.name} · ${venue.capacity} seats`
+      })),
+      activeMakeupClasses: baseSummary.activeMakeupClasses,
       notifications
     }
   }

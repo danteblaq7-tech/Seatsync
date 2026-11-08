@@ -73,23 +73,49 @@ CREATE TABLE IF NOT EXISTS academic_years (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS semester_types (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(80) NOT NULL,
+  number INT NOT NULL UNIQUE,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS semesters (
   id INT AUTO_INCREMENT PRIMARY KEY,
   academic_year_id INT NOT NULL,
   name VARCHAR(50) NOT NULL,
   number INT NOT NULL,
+  semester_type_id INT NOT NULL,
   start_date DATE NOT NULL,
   end_date DATE NOT NULL,
   is_current BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (academic_year_id) REFERENCES academic_years(id) ON DELETE RESTRICT
+  UNIQUE KEY uq_semester_id_academic_year (id, academic_year_id),
+  FOREIGN KEY (academic_year_id) REFERENCES academic_years(id) ON DELETE RESTRICT,
+  FOREIGN KEY (semester_type_id) REFERENCES semester_types(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS cohort_types (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  programme_id INT NOT NULL,
+  name VARCHAR(80) NOT NULL,
+  study_year INT NOT NULL,
+  semester_number INT NOT NULL,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_cohort_type_programme_stage (programme_id, study_year, semester_number),
+  FOREIGN KEY (programme_id) REFERENCES programmes(id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS cohorts (
   id INT AUTO_INCREMENT PRIMARY KEY,
   programme_id INT NOT NULL,
   academic_year_id INT,
+  intake_year INT,
   name VARCHAR(50) NOT NULL,
   year_number INT,
   semester_stream INT,
@@ -97,8 +123,26 @@ CREATE TABLE IF NOT EXISTS cohorts (
   is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_cohort_programme_intake (programme_id, intake_year),
   FOREIGN KEY (programme_id) REFERENCES programmes(id) ON DELETE RESTRICT,
   FOREIGN KEY (academic_year_id) REFERENCES academic_years(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS cohort_progressions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  cohort_id INT NOT NULL,
+  academic_year_id INT NOT NULL,
+  semester_id INT NOT NULL,
+  cohort_type_id INT NOT NULL,
+  student_count INT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_cohort_progression_semester (cohort_id, semester_id),
+  INDEX idx_cohort_progression_period (academic_year_id, semester_id),
+  FOREIGN KEY (cohort_id) REFERENCES cohorts(id) ON DELETE RESTRICT,
+  FOREIGN KEY (academic_year_id) REFERENCES academic_years(id) ON DELETE RESTRICT,
+  FOREIGN KEY (semester_id, academic_year_id) REFERENCES semesters(id, academic_year_id) ON DELETE RESTRICT,
+  FOREIGN KEY (cohort_type_id) REFERENCES cohort_types(id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS students (
@@ -130,6 +174,52 @@ CREATE TABLE IF NOT EXISTS cohort_representatives (
   FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE RESTRICT
 );
 
+CREATE TABLE IF NOT EXISTS cohort_profile_requests (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  programme_id INT NOT NULL,
+  academic_year_id INT NOT NULL,
+  semester_id INT NOT NULL,
+  cohort_type_id INT NOT NULL,
+  intake_year INT NOT NULL,
+  student_count INT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+  reviewed_by INT NULL,
+  reviewed_at TIMESTAMP NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_cohort_profile_request_user (user_id),
+  INDEX idx_cohort_profile_requests_status (status, created_at),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (programme_id) REFERENCES programmes(id) ON DELETE RESTRICT,
+  FOREIGN KEY (academic_year_id) REFERENCES academic_years(id) ON DELETE RESTRICT,
+  FOREIGN KEY (semester_id, academic_year_id) REFERENCES semesters(id, academic_year_id) ON DELETE RESTRICT,
+  FOREIGN KEY (cohort_type_id) REFERENCES cohort_types(id) ON DELETE RESTRICT,
+  FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS cohort_membership_requests (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  cohort_id INT NOT NULL,
+  academic_year_id INT NOT NULL,
+  semester_id INT NOT NULL,
+  cohort_type_id INT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+  reviewed_by INT NULL,
+  reviewed_at TIMESTAMP NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uq_membership_request_user (user_id),
+  INDEX idx_membership_request_cohort_status (cohort_id, status),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (cohort_id) REFERENCES cohorts(id) ON DELETE RESTRICT,
+  FOREIGN KEY (academic_year_id) REFERENCES academic_years(id) ON DELETE RESTRICT,
+  FOREIGN KEY (semester_id, academic_year_id) REFERENCES semesters(id, academic_year_id) ON DELETE RESTRICT,
+  FOREIGN KEY (cohort_type_id) REFERENCES cohort_types(id) ON DELETE RESTRICT,
+  FOREIGN KEY (reviewed_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS lecturers (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
@@ -141,6 +231,14 @@ CREATE TABLE IF NOT EXISTS lecturers (
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT,
   FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS lecturer_cohort_types (
+  lecturer_id INT NOT NULL,
+  cohort_type_id INT NOT NULL,
+  PRIMARY KEY (lecturer_id, cohort_type_id),
+  FOREIGN KEY (lecturer_id) REFERENCES lecturers(id) ON DELETE CASCADE,
+  FOREIGN KEY (cohort_type_id) REFERENCES cohort_types(id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS lecturer_faculties (
@@ -178,7 +276,8 @@ CREATE TABLE IF NOT EXISTS lecturer_units (
 CREATE TABLE IF NOT EXISTS units (
   id INT AUTO_INCREMENT PRIMARY KEY,
   department_id INT,
-  semester_id INT NOT NULL,
+  semester_id INT,
+  semester_type_id INT NOT NULL,
   code VARCHAR(50) NOT NULL UNIQUE,
   name VARCHAR(150) NOT NULL,
   description TEXT,
@@ -187,7 +286,8 @@ CREATE TABLE IF NOT EXISTS units (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (department_id) REFERENCES departments(id) ON DELETE RESTRICT,
-  FOREIGN KEY (semester_id) REFERENCES semesters(id) ON DELETE RESTRICT
+  FOREIGN KEY (semester_id) REFERENCES semesters(id) ON DELETE RESTRICT,
+  FOREIGN KEY (semester_type_id) REFERENCES semester_types(id) ON DELETE RESTRICT
 );
 
 CREATE TABLE IF NOT EXISTS unit_departments (

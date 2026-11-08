@@ -2,6 +2,10 @@ import bcrypt from 'bcryptjs'
 import jwt from 'jsonwebtoken'
 
 import { createRow, query, rawQuery } from '../../repositories/sqlRepository.js'
+import {
+  completeStudentAcademicProfile,
+  getStudentAcademicProfileStatus
+} from './studentAcademicProfileService.js'
 
 const JWT_SECRET = process.env.JWT_SECRET || 'seatsync-dev-secret'
 
@@ -218,7 +222,13 @@ export const registerUser = async ({
 
 export const getProfileStatus = async userId => {
   const roles = await getUserRoles(userId)
-  const role = roles[0]
+  const role = roles.includes('ADMIN')
+    ? 'ADMIN'
+    : roles.includes('CLASS_REP')
+    ? 'CLASS_REP'
+    : roles.includes('LECTURER')
+    ? 'LECTURER'
+    : roles[0]
   let complete = false
   if (role === 'LECTURER') {
     const rows = await query(
@@ -228,18 +238,13 @@ export const getProfileStatus = async userId => {
          AND EXISTS (SELECT 1 FROM lecturer_faculties WHERE lecturer_id = l.id)
          AND EXISTS (SELECT 1 FROM lecturer_departments WHERE lecturer_id = l.id)
          AND EXISTS (SELECT 1 FROM lecturer_programmes WHERE lecturer_id = l.id)
-         AND EXISTS (SELECT 1 FROM lecturer_units WHERE lecturer_id = l.id)`,
+         AND EXISTS (SELECT 1 FROM lecturer_units WHERE lecturer_id = l.id)
+         AND EXISTS (SELECT 1 FROM lecturer_cohort_types WHERE lecturer_id = l.id)`,
       [userId]
     )
     complete = Boolean(rows[0])
   } else if (role === 'STUDENT' || role === 'CLASS_REP') {
-    const rows = await query(
-      `SELECT id FROM students
-       WHERE user_id = ? AND programme_id IS NOT NULL
-         AND current_year IS NOT NULL`,
-      [userId]
-    )
-    complete = Boolean(rows[0])
+    return getStudentAcademicProfileStatus(userId, role)
   } else {
     complete = true
   }
@@ -255,14 +260,18 @@ export const completeAcademicProfile = async (userId, payload) => {
       .filter(Boolean)
     const programmes = (payload.programmeIds || []).map(Number).filter(Boolean)
     const units = (payload.unitIds || []).map(Number).filter(Boolean)
+    const cohortTypes = (payload.cohortTypeIds || [])
+      .map(Number)
+      .filter(Boolean)
     if (
       !faculties.length ||
       !departments.length ||
       !programmes.length ||
-      !units.length
+      !units.length ||
+      !cohortTypes.length
     ) {
       throw new Error(
-        'Select at least one faculty, department, programme, and unit.'
+        'Select at least one faculty, department, programme, unit, and cohort type.'
       )
     }
     const facultyRows = await query(
@@ -292,6 +301,14 @@ export const completeAcademicProfile = async (userId, payload) => {
          AND p.department_id IN (${departments.map(() => '?').join(',')})`,
       [...units, ...programmes, ...departments]
     )
+    const cohortTypeRows = await query(
+      `SELECT ct.id FROM cohort_types ct
+       JOIN programmes p ON p.id = ct.programme_id
+       WHERE ct.id IN (${cohortTypes.map(() => '?').join(',')})
+         AND p.id IN (${programmes.map(() => '?').join(',')})
+         AND ct.is_active = TRUE AND ct.study_year <= p.duration_years`,
+      [...cohortTypes, ...programmes]
+    )
     if (
       facultyRows.length !== faculties.length ||
       departmentRows.length !== departments.length ||
@@ -314,6 +331,11 @@ export const completeAcademicProfile = async (userId, payload) => {
     if (unitRows.length !== units.length) {
       throw new Error(
         'Each selected unit must belong to a selected programme and department.'
+      )
+    }
+    if (cohortTypeRows.length !== cohortTypes.length) {
+      throw new Error(
+        'Each selected cohort type must belong to one of the selected programmes.'
       )
     }
     const existingLecturer = (
@@ -340,6 +362,10 @@ export const completeAcademicProfile = async (userId, payload) => {
       await rawQuery('DELETE FROM lecturer_units WHERE lecturer_id = ?', [
         lecturer.id
       ])
+      await rawQuery(
+        'DELETE FROM lecturer_cohort_types WHERE lecturer_id = ?',
+        [lecturer.id]
+      )
     }
     for (const id of faculties)
       await rawQuery('INSERT INTO lecturer_faculties VALUES (?, ?)', [
@@ -361,32 +387,13 @@ export const completeAcademicProfile = async (userId, payload) => {
         lecturer.id,
         id
       ])
+    for (const id of cohortTypes)
+      await rawQuery('INSERT INTO lecturer_cohort_types VALUES (?, ?)', [
+        lecturer.id,
+        id
+      ])
   } else if (role === 'STUDENT' || role === 'CLASS_REP') {
-    const programmeId = Number(payload.programmeId)
-    const academicYearId = Number(payload.academicYearId)
-    const currentYear = Number(payload.currentYear)
-    if (!programmeId || !academicYearId || !currentYear)
-      throw new Error('Select an academic year, current year, and programme.')
-    const [cohort] = await query(
-      'SELECT id FROM cohorts WHERE programme_id = ? AND academic_year_id = ? ORDER BY id LIMIT 1',
-      [programmeId, academicYearId]
-    )
-    const student = await createRow('students', {
-      user_id: userId,
-      student_number: `STU-${userId}`,
-      programme_id: programmeId,
-      cohort_id: cohort?.id || null,
-      admission_year: new Date().getFullYear(),
-      current_year: currentYear,
-      status: 'ACTIVE'
-    })
-    if (role === 'CLASS_REP' && cohort)
-      await createRow('cohort_representatives', {
-        cohort_id: cohort.id,
-        student_id: student.id,
-        start_date: new Date().toISOString().slice(0, 10),
-        is_active: true
-      })
+    return completeStudentAcademicProfile(userId, role, payload)
   }
   return { complete: true, role }
 }
@@ -396,7 +403,7 @@ export const getLecturerAcademicProfile = async userId => {
     await query('SELECT * FROM lecturers WHERE user_id = ? LIMIT 1', [userId])
   )[0]
   if (!lecturer) return null
-  const [facultyRows, departmentRows, programmeRows, unitRows] =
+  const [facultyRows, departmentRows, programmeRows, unitRows, cohortTypeRows] =
     await Promise.all([
       query('SELECT faculty_id FROM lecturer_faculties WHERE lecturer_id = ?', [
         lecturer.id
@@ -411,7 +418,11 @@ export const getLecturerAcademicProfile = async userId => {
       ),
       query('SELECT unit_id FROM lecturer_units WHERE lecturer_id = ?', [
         lecturer.id
-      ])
+      ]),
+      query(
+        'SELECT cohort_type_id FROM lecturer_cohort_types WHERE lecturer_id = ?',
+        [lecturer.id]
+      )
     ])
   return {
     id: lecturer.id,
@@ -421,7 +432,8 @@ export const getLecturerAcademicProfile = async userId => {
     facultyIds: facultyRows.map(row => Number(row.faculty_id)),
     departmentIds: departmentRows.map(row => Number(row.department_id)),
     programmeIds: programmeRows.map(row => Number(row.programme_id)),
-    unitIds: unitRows.map(row => Number(row.unit_id))
+    unitIds: unitRows.map(row => Number(row.unit_id)),
+    cohortTypeIds: cohortTypeRows.map(row => Number(row.cohort_type_id))
   }
 }
 
@@ -443,14 +455,18 @@ export const updateLecturerAcademicProfile = async (userId, payload) => {
   const units = [
     ...new Set((payload.unitIds || []).map(Number).filter(Boolean))
   ]
+  const cohortTypes = [
+    ...new Set((payload.cohortTypeIds || []).map(Number).filter(Boolean))
+  ]
   if (
     !faculties.length ||
     !departments.length ||
     !programmes.length ||
-    !units.length
+    !units.length ||
+    !cohortTypes.length
   ) {
     throw new Error(
-      'Select at least one faculty, department, programme, and unit.'
+      'Select at least one faculty, department, programme, unit, and cohort type.'
     )
   }
 
@@ -500,13 +516,29 @@ export const updateLecturerAcademicProfile = async (userId, payload) => {
        AND p.department_id IN (${departments.map(() => '?').join(',')})`,
     [...units, ...programmes, ...departments]
   )
+  const cohortTypeRows = await query(
+    `SELECT ct.id FROM cohort_types ct
+     JOIN programmes p ON p.id = ct.programme_id
+     WHERE ct.id IN (${cohortTypes.map(() => '?').join(',')})
+       AND p.id IN (${programmes.map(() => '?').join(',')})
+       AND ct.is_active = TRUE AND ct.study_year <= p.duration_years`,
+    [...cohortTypes, ...programmes]
+  )
   if (unitRows.length !== units.length) {
     throw new Error(
       'Each selected unit must belong to one of the selected programmes and departments.'
     )
   }
+  if (cohortTypeRows.length !== cohortTypes.length) {
+    throw new Error(
+      'Each selected cohort type must belong to one of the selected programmes.'
+    )
+  }
 
   await rawQuery('DELETE FROM lecturer_units WHERE lecturer_id = ?', [
+    lecturer.id
+  ])
+  await rawQuery('DELETE FROM lecturer_cohort_types WHERE lecturer_id = ?', [
     lecturer.id
   ])
   await rawQuery('DELETE FROM lecturer_programmes WHERE lecturer_id = ?', [
@@ -537,6 +569,11 @@ export const updateLecturerAcademicProfile = async (userId, payload) => {
     await rawQuery(
       'INSERT INTO lecturer_units (lecturer_id, unit_id) VALUES (?, ?)',
       [lecturer.id, unitId]
+    )
+  for (const cohortTypeId of cohortTypes)
+    await rawQuery(
+      'INSERT INTO lecturer_cohort_types (lecturer_id, cohort_type_id) VALUES (?, ?)',
+      [lecturer.id, cohortTypeId]
     )
   await rawQuery(
     'UPDATE lecturers SET department_id = ?, title = ? WHERE id = ?',

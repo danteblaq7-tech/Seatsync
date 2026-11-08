@@ -1027,6 +1027,16 @@ button {
   gap: 12px;
 }
 
+.timetable-time-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.timetable-time-filter input {
+  flex: 1;
+}
+
 .timetable-view-switcher {
   margin-left: auto;
 }
@@ -1402,6 +1412,10 @@ button {
 .status-badge.warn {
   background: rgba(217, 119, 6, 0.12);
   color: var(--warning);
+}
+.status-badge.muted {
+  background: rgba(100, 116, 139, 0.12);
+  color: #64748b;
 }
 
 .table-panel table {
@@ -2390,4 +2404,78 @@ button {
   overflow: visible;
   white-space: normal;
   overflow-wrap: anywhere;
+}
+
+.student-academic-profile-editor {
+  width: 100%;
+}
+
+.student-academic-profile-editor > .content-panel {
+  padding: 28px;
+  border-radius: 20px;
+  box-shadow: 0 12px 32px rgba(17, 17, 17, 0.045);
+}
+
+.student-academic-profile-form {
+  gap: 22px;
+}
+
+.student-academic-profile-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.student-academic-profile-fields > label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.student-academic-profile-fields input,
+.student-academic-profile-fields select {
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.student-academic-profile-fields input:focus,
+.student-academic-profile-fields select:focus {
+  outline: 3px solid rgba(17, 17, 17, 0.1);
+  border-color: var(--text);
+}
+
+.student-academic-profile-fields input:disabled,
+.student-academic-profile-fields select:disabled {
+  background: var(--surface-muted);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.student-academic-profile-form > .form-error {
+  margin: 0;
+}
+
+.student-academic-profile-form > .primary-button {
+  align-self: flex-start;
+  min-width: 200px;
+}
+
+@media (max-width: 760px) {
+  .student-academic-profile-editor > .content-panel {
+    padding: 20px;
+  }
+
+  .student-academic-profile-fields {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
 }

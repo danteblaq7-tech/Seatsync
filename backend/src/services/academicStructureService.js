@@ -13,6 +13,7 @@ const serialize = row => ({
   departmentId: row.departmentId ?? row.department_id,
   academicYearId: row.academicYearId ?? row.academic_year_id,
   semesterId: row.semesterId ?? row.semester_id,
+  semesterTypeId: row.semesterTypeId ?? row.semester_type_id,
   programmeId: row.programmeId ?? row.programme_id,
   venueTypeId: row.venueTypeId ?? row.venue_type_id,
   courseId: row.courseId ?? row.course_id,
@@ -74,9 +75,13 @@ export const normalizeSemesterPayload = payload => {
     const number = Number(next.semesterNumber)
     next.number = Number.isFinite(number) ? number : 1
   }
+  if (next.semesterTypeId !== undefined && next.semester_type_id === undefined) {
+    next.semester_type_id = next.semesterTypeId
+  }
 
   delete next.semester_number
   delete next.semesterNumber
+  delete next.semesterTypeId
 
   if (next.startDate && !next.start_date) next.start_date = next.startDate
   if (next.endDate && !next.end_date) next.end_date = next.endDate
@@ -135,9 +140,43 @@ export const updateDepartment = async (id, updates) => {
 
 export const listProgrammes = async () =>
   (await listRows('programmes')).map(serialize)
+const syncProgrammeCohortTypes = async programme => {
+  const duration = Number(programme.duration_years ?? programme.durationYears)
+  if (!Number.isInteger(duration) || duration < 1) {
+    throw new Error('Programme duration must be a positive whole number.')
+  }
+  const [semesterTypes] = await rawQuery(
+    'SELECT number FROM semester_types WHERE is_active = TRUE ORDER BY number'
+  )
+  for (let studyYear = 1; studyYear <= duration; studyYear += 1) {
+    for (const semesterType of semesterTypes) {
+      await rawQuery(
+        `INSERT INTO cohort_types
+          (programme_id, name, study_year, semester_number, is_active)
+         VALUES (?, ?, ?, ?, TRUE)
+         ON DUPLICATE KEY UPDATE name = VALUES(name), is_active = TRUE`,
+        [
+          Number(programme.id),
+          `${programme.code} ${studyYear}.${semesterType.number}`,
+          studyYear,
+          Number(semesterType.number)
+        ]
+      )
+    }
+  }
+}
+const validateProgrammeDuration = value => {
+  if (value === undefined || value === null || value === '') return
+  const duration = Number(value)
+  if (!Number.isInteger(duration) || duration < 1) {
+    throw new Error('Programme duration must be a positive whole number.')
+  }
+}
 export const createProgramme = async payload => {
+  validateProgrammeDuration(payload.duration_years ?? payload.durationYears)
   await validateAcademicDuplicate('programme', payload)
   const row = await createRow('programmes', payload)
+  if (row) await syncProgrammeCohortTypes(row)
   return row ? serialize(row) : null
 }
 export const getProgramme = async id => {
@@ -145,7 +184,9 @@ export const getProgramme = async id => {
   return row ? serialize(row) : null
 }
 export const updateProgramme = async (id, updates) => {
+  validateProgrammeDuration(updates.duration_years ?? updates.durationYears)
   const row = await updateRow('programmes', id, updates)
+  if (row) await syncProgrammeCohortTypes(row)
   return row ? serialize(row) : null
 }
 
@@ -170,10 +211,29 @@ export const listSemesters = async () =>
   (await listRows('semesters')).map(serialize)
 export const createSemester = async payload => {
   const normalizedPayload = normalizeSemesterPayload(payload)
-  await validateAcademicDuplicate('semester', normalizedPayload)
   if (!normalizedPayload.academic_year_id) {
     throw new Error('An academic year is required before creating a semester.')
   }
+  let semesterTypeId = Number(normalizedPayload.semester_type_id)
+  if (!semesterTypeId && normalizedPayload.number) {
+    const [legacyType] = await rawQuery(
+      'SELECT id FROM semester_types WHERE number = ? AND is_active = TRUE LIMIT 1',
+      [Number(normalizedPayload.number)]
+    )
+    semesterTypeId = Number(legacyType?.id)
+  }
+  const [semesterTypes] = await rawQuery(
+    'SELECT id, name, number FROM semester_types WHERE id = ? AND is_active = TRUE',
+    [semesterTypeId]
+  )
+  const semesterType = semesterTypes?.[0]
+  if (!semesterType) {
+    throw new Error('Select an active reusable semester type.')
+  }
+  normalizedPayload.semester_type_id = semesterType.id
+  normalizedPayload.number = semesterType.number
+  normalizedPayload.name = semesterType.name
+  await validateAcademicDuplicate('semester', normalizedPayload)
 
   const academicYear = await findById(
     'academic_years',
@@ -222,7 +282,65 @@ export const getSemester = async id => {
   return row ? serialize(row) : null
 }
 export const updateSemester = async (id, updates) => {
-  const row = await updateRow('semesters', id, updates)
+  const current = await findById('semesters', id)
+  if (!current) return null
+  const normalized = normalizeSemesterPayload(updates)
+  const academicYearId = Number(
+    normalized.academic_year_id ?? current.academic_year_id
+  )
+  const hasExplicitSemesterType = normalized.semester_type_id !== undefined
+  let semesterTypeId = Number(
+    hasExplicitSemesterType
+      ? normalized.semester_type_id
+      : current.semester_type_id
+  )
+  if (!hasExplicitSemesterType && normalized.number) {
+    const [legacyType] = await rawQuery(
+      'SELECT id FROM semester_types WHERE number = ? AND is_active = TRUE LIMIT 1',
+      [Number(normalized.number)]
+    )
+    semesterTypeId = Number(legacyType?.id)
+  }
+  const [types] = await rawQuery(
+    'SELECT id, name, number FROM semester_types WHERE id = ? AND is_active = TRUE',
+    [semesterTypeId]
+  )
+  const semesterType = types[0]
+  if (!semesterType) throw new Error('Select an active semester type.')
+  const academicYear = await findById('academic_years', academicYearId)
+  const academicStart = academicYear?.startDate ?? academicYear?.start_date
+  const academicEnd = academicYear?.endDate ?? academicYear?.end_date
+  if (!academicStart || !academicEnd) {
+    throw new Error('The selected academic year does not have valid dates.')
+  }
+  const startDate = toDateString(
+    normalized.start_date ?? current.start_date ?? current.startDate
+  )
+  const endDate = toDateString(
+    normalized.end_date ?? current.end_date ?? current.endDate
+  )
+  if (
+    !startDate ||
+    !endDate ||
+    startDate < toDateString(academicStart) ||
+    endDate > toDateString(academicEnd) ||
+    startDate > endDate
+  ) {
+    throw new Error(
+      'Semester dates must be valid and fall within the selected academic year.'
+    )
+  }
+  const next = {
+    ...normalized,
+    academic_year_id: academicYearId,
+    semester_type_id: semesterType.id,
+    number: semesterType.number,
+    name: semesterType.name,
+    start_date: startDate,
+    end_date: endDate
+  }
+  await validateAcademicDuplicate('semester', next, id)
+  const row = await updateRow('semesters', id, next)
   return row ? serialize(row) : null
 }
 
@@ -431,22 +549,55 @@ const pageOptions = ({ page = 1, limit = 20 } = {}) => {
   }
 }
 
-export const listCohorts = async options => {
+export const listCohorts = async (options, user) => {
+  const roles = Array.isArray(user?.roles)
+    ? user.roles
+    : user?.roles
+    ? [user.roles]
+    : []
+  const representativeScope =
+    roles.includes('CLASS_REP') && !roles.includes('ADMIN')
+      ? 'AND EXISTS (SELECT 1 FROM cohort_representatives cr JOIN students s ON s.id = cr.student_id WHERE cr.cohort_id = c.id AND s.user_id = ? AND cr.is_active = TRUE AND (cr.end_date IS NULL OR cr.end_date >= CURDATE()))'
+      : ''
+  const representativeParams = representativeScope ? [user.id] : []
   if (!options || (options.page === undefined && options.limit === undefined)) {
     return (
       await rawQuery(`
-      SELECT c.*, p.department_id
+      SELECT c.*, p.department_id,
+        (SELECT COUNT(*) FROM students submitted
+         WHERE submitted.cohort_id = c.id) +
+        (SELECT COUNT(*) FROM cohort_membership_requests pending
+         WHERE pending.cohort_id = c.id AND pending.status = 'PENDING')
+          AS submitted_profile_count,
+        (SELECT COUNT(*) FROM cohort_membership_requests pending
+         WHERE pending.cohort_id = c.id AND pending.status = 'PENDING')
+          AS pending_profile_count,
+        (SELECT ct.name FROM cohort_progressions cp
+         JOIN cohort_types ct ON ct.id = cp.cohort_type_id
+         JOIN semesters s ON s.id = cp.semester_id
+         WHERE cp.cohort_id = c.id
+         ORDER BY s.start_date DESC, cp.id DESC LIMIT 1) AS current_cohort_type_name,
+        (SELECT s.name FROM cohort_progressions cp
+         JOIN semesters s ON s.id = cp.semester_id
+         WHERE cp.cohort_id = c.id
+         ORDER BY s.start_date DESC, cp.id DESC LIMIT 1) AS current_semester_name,
+        (SELECT ay.name FROM cohort_progressions cp
+         JOIN academic_years ay ON ay.id = cp.academic_year_id
+         JOIN semesters s ON s.id = cp.semester_id
+         WHERE cp.cohort_id = c.id
+         ORDER BY s.start_date DESC, cp.id DESC LIMIT 1) AS current_academic_year_name
       FROM cohorts c
       LEFT JOIN programmes p ON p.id = c.programme_id
-      WHERE c.is_active = TRUE
+      WHERE c.is_active = TRUE ${representativeScope}
       ORDER BY c.id
-    `)
+    `, representativeParams)
     ).map(serialize)
   }
 
   const { page, limit, offset } = pageOptions(options)
   const clauses = ['c.is_active = TRUE']
-  const params = []
+  if (representativeScope) clauses.push(representativeScope.replace(/^AND /, ''))
+  const params = [...representativeParams]
   if (options.search) {
     clauses.push('(c.name LIKE ? OR p.name LIKE ? OR p.code LIKE ?)')
     params.push(
@@ -460,20 +611,45 @@ export const listCohorts = async options => {
     params.push(Number(options.programme))
   }
   if (options.academicYear) {
-    clauses.push('c.academic_year_id = ?')
+    clauses.push(
+      'EXISTS (SELECT 1 FROM cohort_progressions cp_filter WHERE cp_filter.cohort_id = c.id AND cp_filter.academic_year_id = ?)'
+    )
     params.push(Number(options.academicYear))
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
   const sortColumns = {
     name: 'c.name',
     students: 'c.student_count',
-    year: 'c.academic_year_id'
+    year: '(SELECT MAX(cp_sort.academic_year_id) FROM cohort_progressions cp_sort WHERE cp_sort.cohort_id = c.id)'
   }
   const orderBy = sortColumns[options.sort] || 'c.name'
   const direction =
     String(options.direction).toLowerCase() === 'desc' ? 'DESC' : 'ASC'
   const rows = await rawQuery(
-    `SELECT c.*, p.department_id FROM cohorts c LEFT JOIN programmes p ON p.id = c.programme_id ${where} ORDER BY ${orderBy} ${direction}, c.id LIMIT ? OFFSET ?`,
+    `SELECT c.*, p.department_id,
+      (SELECT COUNT(*) FROM students submitted
+       WHERE submitted.cohort_id = c.id) +
+      (SELECT COUNT(*) FROM cohort_membership_requests pending
+       WHERE pending.cohort_id = c.id AND pending.status = 'PENDING')
+        AS submitted_profile_count,
+      (SELECT COUNT(*) FROM cohort_membership_requests pending
+       WHERE pending.cohort_id = c.id AND pending.status = 'PENDING')
+        AS pending_profile_count,
+      (SELECT ct.name FROM cohort_progressions cp
+       JOIN cohort_types ct ON ct.id = cp.cohort_type_id
+       JOIN semesters s ON s.id = cp.semester_id
+       WHERE cp.cohort_id = c.id
+       ORDER BY s.start_date DESC, cp.id DESC LIMIT 1) AS current_cohort_type_name,
+      (SELECT s.name FROM cohort_progressions cp
+       JOIN semesters s ON s.id = cp.semester_id
+       WHERE cp.cohort_id = c.id
+       ORDER BY s.start_date DESC, cp.id DESC LIMIT 1) AS current_semester_name,
+      (SELECT ay.name FROM cohort_progressions cp
+       JOIN academic_years ay ON ay.id = cp.academic_year_id
+       JOIN semesters s ON s.id = cp.semester_id
+       WHERE cp.cohort_id = c.id
+       ORDER BY s.start_date DESC, cp.id DESC LIMIT 1) AS current_academic_year_name
+     FROM cohorts c LEFT JOIN programmes p ON p.id = c.programme_id ${where} ORDER BY ${orderBy} ${direction}, c.id LIMIT ? OFFSET ?`,
     [...params, limit, offset]
   )
   const [{ total = 0 } = {}] = await rawQuery(
@@ -699,6 +875,13 @@ export const createCourse = async payload => {
   }
   delete normalizedPayload.course_level
   delete normalizedPayload.credit_hours
+  if (
+    normalizedPayload.semesterTypeId !== undefined &&
+    normalizedPayload.semester_type_id === undefined
+  ) {
+    normalizedPayload.semester_type_id = normalizedPayload.semesterTypeId
+  }
+  delete normalizedPayload.semesterTypeId
   const programmeIds = Array.isArray(normalizedPayload.programme_ids)
     ? normalizedPayload.programme_ids.map(Number).filter(Boolean)
     : normalizedPayload.programme_id
@@ -715,12 +898,41 @@ export const createCourse = async payload => {
   delete normalizedPayload.department_ids
   delete normalizedPayload.department_id
   normalizedPayload.department_id = departmentIds[0] || null
+  let semesterTypeId = Number(normalizedPayload.semester_type_id)
+  if (!semesterTypeId && normalizedPayload.semester_id) {
+    const [legacySemester] = await rawQuery(
+      'SELECT semester_type_id FROM semesters WHERE id = ?',
+      [Number(normalizedPayload.semester_id)]
+    )
+    semesterTypeId = Number(legacySemester?.semester_type_id)
+  }
+  if (!semesterTypeId) {
+    return {
+      validationError: 'Select a reusable semester type for the unit.'
+    }
+  }
+  const [semesterTypes] = await rawQuery(
+    'SELECT id FROM semester_types WHERE id = ? AND is_active = TRUE',
+    [semesterTypeId]
+  )
+  if (!semesterTypes.length) {
+    return { validationError: 'The selected semester type is not active.' }
+  }
+  normalizedPayload.semester_type_id = semesterTypeId
+  if (payload.semester_type_id || payload.semesterTypeId) {
+    normalizedPayload.semester_id = null
+  }
 
   const selectionError = await validateUnitAcademicSelections(
     departmentIds,
     programmeIds
   )
   if (selectionError) return { validationError: selectionError }
+  const studyYearError = await validateUnitStudyYear(
+    normalizedPayload.year_level,
+    programmeIds
+  )
+  if (studyYearError) return { validationError: studyYearError }
 
   const row = await createRow('units', normalizedPayload)
   if (!row) return null
@@ -757,6 +969,25 @@ export const updateCourse = async (id, updates) => {
   }
   delete normalizedPayload.course_level
   delete normalizedPayload.credit_hours
+  if (
+    normalizedPayload.semesterTypeId !== undefined &&
+    normalizedPayload.semester_type_id === undefined
+  ) {
+    normalizedPayload.semester_type_id = normalizedPayload.semesterTypeId
+  }
+  delete normalizedPayload.semesterTypeId
+  if (normalizedPayload.semester_type_id !== undefined) {
+    const typeId = Number(normalizedPayload.semester_type_id)
+    const [semesterTypes] = await rawQuery(
+      'SELECT id FROM semester_types WHERE id = ? AND is_active = TRUE',
+      [typeId]
+    )
+    if (!semesterTypes.length) {
+      return { validationError: 'The selected semester type is not active.' }
+    }
+    normalizedPayload.semester_type_id = typeId
+    normalizedPayload.semester_id = null
+  }
   const hasProgrammeUpdate =
     Array.isArray(normalizedPayload.programme_ids) ||
     normalizedPayload.programme_id !== undefined
@@ -781,18 +1012,26 @@ export const updateCourse = async (id, updates) => {
   if (hasDepartmentUpdate)
     normalizedPayload.department_id = departmentIds[0] || null
 
+  const existingCourse = await getCourse(id)
+  if (!existingCourse) return null
   if (hasDepartmentUpdate || hasProgrammeUpdate) {
-    const selections = await getCourse(id)
     const selectionError = await validateUnitAcademicSelections(
       hasDepartmentUpdate
         ? departmentIds
-        : (selections?.departmentIds || []).map(Number),
+        : (existingCourse?.departmentIds || []).map(Number),
       hasProgrammeUpdate
         ? programmeIds
-        : (selections?.programmeIds || []).map(Number)
+        : (existingCourse?.programmeIds || []).map(Number)
     )
     if (selectionError) return { validationError: selectionError }
   }
+  const studyYearError = await validateUnitStudyYear(
+    normalizedPayload.year_level ?? existingCourse?.year_level,
+    hasProgrammeUpdate
+      ? programmeIds
+      : (existingCourse?.programmeIds || []).map(Number)
+  )
+  if (studyYearError) return { validationError: studyYearError }
 
   const row = await updateRow('units', id, normalizedPayload)
   if (!row) return null
@@ -842,6 +1081,26 @@ const validateUnitAcademicSelections = async (departmentIds, programmeIds) => {
   const departmentSet = new Set(departmentIds.map(Number))
   if (rows.some(row => !departmentSet.has(Number(row.department_id)))) {
     return 'Every selected programme must belong to a selected department. Review the department and programme selections.'
+  }
+  return null
+}
+const validateUnitStudyYear = async (studyYear, programmeIds) => {
+  const year = Number(studyYear)
+  if (!Number.isInteger(year) || year < 1) {
+    return 'Unit study year must be a positive whole number.'
+  }
+  const ids = [...new Set(programmeIds.map(Number))]
+  if (!ids.length) return 'Select at least one programme for the unit.'
+  const rows = await rawQuery(
+    `SELECT id, duration_years FROM programmes
+     WHERE id IN (${ids.map(() => '?').join(',')})`,
+    ids
+  )
+  if (
+    rows.length !== ids.length ||
+    rows.some(programme => year > Number(programme.duration_years))
+  ) {
+    return 'The unit study year must fit within every selected programme duration.'
   }
   return null
 }

@@ -1,5 +1,6 @@
 import db from '../config/db.js'
 import { assertNoStagedDraftConflict } from './scheduleDraftConflict.js'
+import { validateAcademicPeriod } from './academicProgressionValidation.js'
 
 const run = async (connection, sql, params = []) => {
   const [rows] = await connection.execute(sql, params)
@@ -66,15 +67,22 @@ const assertNoTimetableConflict = async (
       'The academic year, unit, active lecturer, or active venue is invalid.'
     )
   }
-  const expectedStudents = Number(
-    get(event, 'expected_students', 'expectedStudents') || 0
+  const academicValidation = await validateAcademicPeriod(connection, {
+    academicYearId: get(event, 'academic_year_id', 'academicYearId'),
+    semesterId: get(event, 'semester_id', 'semesterId'),
+    unitId: get(event, 'course_id', 'courseId'),
+    lecturerId: get(event, 'lecturer_id', 'lecturerId'),
+    programmeIds: get(event, 'programme_ids', 'programmeIds') || [],
+    cohortIds
+  })
+  const expectedStudents = academicValidation.expectedStudents
+  const venueCapacityRows = await run(
+    connection,
+    'SELECT capacity FROM venues WHERE id = ?',
+    [venueId]
   )
   const allowCapacityOverride = Boolean(
     get(event, 'allow_capacity_override', 'allowCapacityOverride')
-  )
-  const [venueCapacityRows] = await connection.execute(
-    'SELECT capacity FROM venues WHERE id = ?',
-    [venueId]
   )
   if (
     !allowCapacityOverride &&
@@ -208,6 +216,55 @@ const assertNoExamConflict = async (
   }
   if (venueIds.some(id => !id) || new Set(venueIds).size !== venueIds.length) {
     throw new Error('Each venue can only be added once to an exam.')
+  }
+  const academicValidation = await validateAcademicPeriod(connection, {
+    academicYearId: get(exam, 'academic_year_id', 'academicYearId'),
+    semesterId: get(exam, 'semester_id', 'semesterId'),
+    unitId: courseId,
+    programmeIds: get(exam, 'programme_ids', 'programmeIds') || [],
+    cohortIds: uniqueCohortIds,
+    examDate: date
+  })
+  const cohortCountById = new Map(
+    academicValidation.progressions.map(item => [
+      Number(item.cohort_id),
+      Number(item.student_count)
+    ])
+  )
+  const cohortAllocations = exam.cohort_allocations ?? exam.cohortAllocations ?? []
+  if (
+    cohortAllocations.length !== uniqueCohortIds.length ||
+    cohortAllocations.some(
+      allocation => Number(get(allocation, 'student_count', 'studentCount')) < 1
+    )
+  ) {
+    throw new Error(
+      'Each selected exam cohort must have a positive student count.'
+    )
+  }
+  for (const allocation of cohortAllocations) {
+    const cohortId = Number(get(allocation, 'cohort_id', 'cohortId'))
+    const count = Number(get(allocation, 'student_count', 'studentCount'))
+    if (count !== cohortCountById.get(cohortId)) {
+      throw new Error(
+        'Exam cohort counts must match the selected academic progression.'
+      )
+    }
+  }
+  const venueStudentTotal = venueAllocations.reduce(
+    (total, allocation) =>
+      total +
+      Number(
+        get(allocation, 'student_count', 'studentCount') ??
+          get(allocation, 'allocated_capacity', 'allocatedCapacity') ??
+          0
+      ),
+    0
+  )
+  if (venueStudentTotal < academicValidation.expectedStudents) {
+    throw new Error(
+      `Venue allocations cover ${venueStudentTotal} students, but the selected cohorts contain ${academicValidation.expectedStudents}.`
+    )
   }
   const unitRows = await run(
     connection,

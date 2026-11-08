@@ -1,13 +1,31 @@
-import { useQuery } from '@tanstack/react-query'
+import { useEffect } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { io } from 'socket.io-client'
 import { api } from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import StatCard from '../components/StatCard'
+import { SOCKET_BASE_URL } from '../config.js'
 
 const toObject = value =>
   value && typeof value === 'object' && !Array.isArray(value) ? value : {}
 
 export default function DashboardPage () {
+  const queryClient = useQueryClient()
   const { user } = useAuth()
+
+  useEffect(() => {
+    const socket = io(SOCKET_BASE_URL, { transports: ['websocket'] })
+    const refreshDashboard = () =>
+      queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
+    socket.on('timetable:changed', refreshDashboard)
+    socket.on('timetable:override_created', refreshDashboard)
+    socket.on('venue:blocked', refreshDashboard)
+    const timer = setInterval(refreshDashboard, 30000)
+    return () => {
+      clearInterval(timer)
+      socket.disconnect()
+    }
+  }, [queryClient])
 
   const {
     data: summary = {},
@@ -18,7 +36,8 @@ export default function DashboardPage () {
     queryFn: async () => {
       const response = await api.get('/api/dashboard')
       return toObject(response?.data ?? response)
-    }
+    },
+    refetchInterval: 30000
   })
 
   const cards = Array.isArray(summary.stats) ? summary.stats : []
@@ -142,10 +161,12 @@ export default function DashboardPage () {
                 )}
               </ul>
             </section>
-            {summary.role === 'LECTURER' && (
+          </div>
+          <div className='panel-grid'>
+            {summary.role !== 'STUDENT' && (
               <>
                 <section className='content-panel'>
-                  <h2>Available venues</h2>
+                  <h2>Available venues now</h2>
                   <ul className='simple-list'>
                     {renderList(
                       lists.venueAvailability || [],
@@ -154,7 +175,7 @@ export default function DashboardPage () {
                   </ul>
                 </section>
                 <section className='content-panel'>
-                  <h2>Occupied venues</h2>
+                  <h2>Occupied venues now</h2>
                   <ul className='simple-list'>
                     {renderList(
                       lists.occupiedVenues || [],
@@ -164,6 +185,15 @@ export default function DashboardPage () {
                 </section>
               </>
             )}
+            <section className='content-panel'>
+              <h2>Active make-up classes</h2>
+              <ul className='simple-list'>
+                {renderList(
+                  lists.activeMakeupClasses || [],
+                  'No make-up classes are active right now'
+                )}
+              </ul>
+            </section>
           </div>
         </>
       )}
