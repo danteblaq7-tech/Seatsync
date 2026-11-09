@@ -1,6 +1,7 @@
 import { normalizeDateValue, query } from '../repositories/sqlRepository.js'
 import { deleteExam } from '../services/exams/examService.js'
 import { getExamVisibility } from '../services/timetableVisibility.js'
+import { buildTimetableQueryFilters } from '../services/timetableQueryFilters.js'
 import { emitSocketEvent } from '../socket/socketEvents.js'
 
 export const deleteExamController = async (req, res) => {
@@ -29,6 +30,10 @@ export const listExamsController = async (req, res) => {
   const visibility = getExamVisibility(req.user, {
     timetable: req.query.scope === 'timetable'
   })
+  const filters =
+    req.query.scope === 'timetable'
+      ? buildTimetableQueryFilters(req.query, { kind: 'exam' })
+      : { conditions: [], params: [] }
   const rows = await query(
     `
       SELECT e.*, e.unit_id AS course_id,
@@ -47,10 +52,17 @@ export const listExamsController = async (req, res) => {
       LEFT JOIN exam_venue_allocations eva ON eva.exam_id = e.id
       LEFT JOIN venues v ON v.id = eva.venue_id
       WHERE 1 = 1 ${visibility.clause}
+        ${
+          filters.conditions.length
+            ? `AND ${filters.conditions
+                .map(condition => `(${condition})`)
+                .join(' AND ')}`
+            : ''
+        }
       GROUP BY e.id
       ORDER BY e.exam_date, e.start_time, e.id
     `,
-    visibility.params
+    [...visibility.params, ...filters.params]
   )
 
   const data = rows.map(row => ({

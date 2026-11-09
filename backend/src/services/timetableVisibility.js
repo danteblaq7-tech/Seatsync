@@ -90,9 +90,6 @@ export const getExamVisibility = (user, { timetable = false } = {}) => {
     )
     params.push(Number(user.id))
   }
-  if (timetable && conditions.length) {
-    return { clause: `AND (${conditions.join(' OR ')})`, params }
-  }
   if (roles.includes('LECTURER')) {
     conditions.push(
       `EXISTS (
@@ -116,7 +113,7 @@ export const getExamVisibility = (user, { timetable = false } = {}) => {
     )
     params.push(Number(user.id), Number(user.id))
   }
-  if (roles.includes('STUDENT')) {
+  if (!timetable && roles.includes('STUDENT')) {
     conditions.push(
       `EXISTS (
         SELECT 1 FROM exam_cohorts evc

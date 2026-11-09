@@ -13,9 +13,20 @@ import {
   removeReplacedTimetableEntries,
   weekdayNameFromDateOnly
 } from './scheduleOverrideAvailability.js'
+import { buildTimetableQueryFilters } from './timetableQueryFilters.js'
 
-export const listTimetableEntries = async user => {
+export const listTimetableEntries = async (user, filters = {}) => {
   const visibility = getTimetableVisibility(user)
+  const eventFilters = buildTimetableQueryFilters(filters)
+  const eventConditions = [
+    ...(visibility.clause
+      ? [visibility.clause.slice('WHERE '.length)]
+      : []),
+    ...eventFilters.conditions
+  ]
+  const eventWhere = eventConditions.length
+    ? `WHERE ${eventConditions.map(condition => `(${condition})`).join(' AND ')}`
+    : ''
   const entries = (
     await rawQuery(
       `
@@ -36,11 +47,11 @@ export const listTimetableEntries = async user => {
     LEFT JOIN venues v ON v.id = te.venue_id
     LEFT JOIN timetable_entry_cohorts tec ON tec.timetable_entry_id = te.id
     LEFT JOIN timetable_entry_programmes tep ON tep.timetable_entry_id = te.id
-    ${visibility.clause}
+    ${eventWhere}
     GROUP BY te.id
     ORDER BY te.id
   `,
-      visibility.params
+      [...visibility.params, ...eventFilters.params]
     )
   ).map(row => ({
     ...row,
@@ -59,6 +70,17 @@ export const listTimetableEntries = async user => {
       ? String(row.programme_ids).split(',').map(Number)
       : []
   }))
+  const overrideFilters = buildTimetableQueryFilters(filters, {
+    override: true
+  })
+  const overrideConditions = [
+    "so.status IN ('APPROVED', 'CANCELLED_NO_RESTORE')",
+    'so.effective_date >= CURDATE()',
+    ...(visibility.clause
+      ? [visibility.clause.slice('WHERE '.length)]
+      : []),
+    ...overrideFilters.conditions
+  ]
   const overrides = await rawQuery(
     `SELECT so.*, DATE_FORMAT(so.effective_date, '%Y-%m-%d') AS effective_date,
       DAYNAME(so.effective_date) AS override_day,
@@ -74,15 +96,12 @@ export const listTimetableEntries = async user => {
      JOIN venues v ON v.id = so.new_venue_id
      LEFT JOIN timetable_entry_cohorts tec ON tec.timetable_entry_id = te.id
      LEFT JOIN timetable_entry_programmes tep ON tep.timetable_entry_id = te.id
-    WHERE so.status IN ('APPROVED', 'CANCELLED_NO_RESTORE')
-       AND so.effective_date >= CURDATE() ${
-      visibility.clause
-        ? `AND ${visibility.clause.slice('WHERE '.length)}`
-        : ''
-    }
+    WHERE ${overrideConditions
+      .map(condition => `(${condition})`)
+      .join(' AND ')}
      GROUP BY so.id
      ORDER BY so.effective_date, so.new_start_time`,
-    visibility.params
+    [...visibility.params, ...overrideFilters.params]
   )
   return [
     ...entries,

@@ -410,6 +410,20 @@ export default function ExamsPage () {
         }))
       }
     })
+    const storedProgrammeIds =
+      values.programme_ids ??
+      values.programmeIds ??
+      (Array.isArray(values.unit_groups)
+        ? values.unit_groups.flatMap(group => group.programme_ids || [])
+        : undefined)
+    const cohortProgrammeIds = unitGroups.flatMap(group =>
+      Object.keys(group.cohort_allocations)
+        .map(cohortId =>
+          cohorts.find(item => String(item.id) === String(cohortId))
+        )
+        .map(cohort => cohort?.programme_id ?? cohort?.programmeId)
+        .filter(value => value !== undefined && value !== null)
+    )
     const selectedUnits = unitGroups
       .map(group =>
         courses.find(item => String(item.id) === String(group.course_id))
@@ -426,13 +440,17 @@ export default function ExamsPage () {
           .map(String)
       )
     ]
-    const programmeIds = [
-      ...new Set(
-        selectedUnits
-          .flatMap(unit => unit.programmeIds || unit.programme_ids || [])
-          .map(String)
-      )
-    ]
+    const programmeIds = storedProgrammeIds
+      ? [...new Set(storedProgrammeIds.map(String))]
+      : cohortProgrammeIds.length
+        ? [...new Set(cohortProgrammeIds.map(String))]
+        : [
+            ...new Set(
+              selectedUnits
+                .flatMap(unit => unit.programmeIds || unit.programme_ids || [])
+                .map(String)
+            )
+          ]
     const facultyIds = departments
       .filter(item => departmentIds.includes(String(item.id)))
       .map(item => String(item.faculty_id ?? item.facultyId))
@@ -485,6 +503,12 @@ export default function ExamsPage () {
       const unitLabel = unit
         ? `${unit.code ? `${unit.code} · ` : ''}${unit.name || ''}`.trim()
         : `Unit ${group.course_id ?? group.courseId ?? '?'}`
+      const studyYear =
+        group.study_year ??
+        group.studyYear ??
+        group.unit_year_level ??
+        unit?.year_level ??
+        unit?.yearLevel
       const cohortNames = (group.cohort_allocations || [])
         .map(allocation => {
           const id = allocation.cohortId ?? allocation.cohort_id
@@ -495,19 +519,30 @@ export default function ExamsPage () {
           )
         })
         .join(', ')
-      return `Year ${group.study_year ?? group.unit_year_level ?? '?'} · ${unitLabel}: ${
+      return `Year ${studyYear ?? '?'} · ${unitLabel}: ${
         cohortNames || 'No cohorts'
       }`
     })
-    const venueNames = (payload.venue_allocations || [])
+    const venueAllocations = groups.flatMap(
+      group => group.venue_allocations || []
+    )
+    const venueNames = (
+      venueAllocations.length
+        ? venueAllocations
+        : payload.venue_allocations || payload.venue_names || []
+    )
       .map(allocation => {
         const id = allocation.venueId ?? allocation.venue_id
         const venue = venues.find(item => String(item.id) === String(id))
         return venue
           ? `${venue.code ? `${venue.code} · ` : ''}${venue.name}`
-          : `Venue ${id}`
+          : allocation.name ||
+              allocation.venueName ||
+              allocation.venue_name ||
+              (id ? `Venue ${id}` : '')
       })
-      .join(', ')
+      .filter(Boolean)
+    const uniqueVenueNames = [...new Set(venueNames)]
     const yearName = academicYears.find(
       item =>
         String(item.id) ===
@@ -523,7 +558,7 @@ export default function ExamsPage () {
       payload.exam_id ? `Exam #${payload.exam_id} changes · ` : ''
     }${groupLabels.join(' | ')} · ${yearName || 'Year'} / ${
       semesterName || 'Semester'
-    } · ${venueNames || 'No venues'} · ${examDay(date)}, ${formatExamDate(
+    } · ${uniqueVenueNames.join(', ') || 'No venues'} · ${examDay(date)}, ${formatExamDate(
       date
     )} (${payload.start_time ?? payload.startTime}–${
       payload.end_time ?? payload.endTime
@@ -1203,11 +1238,79 @@ export default function ExamsPage () {
               </fieldset>
 
               <fieldset className='full-width checkbox-fieldset'>
+                <legend>Exam schedule</legend>
+                <div className='form-grid'>
+                  <label>
+                    Exam date
+                    <input
+                      type='date'
+                      value={form.exam_date}
+                      min={todayInputDate()}
+                      onChange={event =>
+                        setForm(current => ({
+                          ...current,
+                          exam_date: event.target.value
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <label>
+                    Start time
+                    <input
+                      type='time'
+                      value={form.start_time}
+                      min={
+                        form.exam_date === todayInputDate()
+                          ? new Date().toTimeString().slice(0, 5)
+                          : undefined
+                      }
+                      onChange={event =>
+                        setForm(current => ({
+                          ...current,
+                          start_time: event.target.value
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <label>
+                    End time
+                    <input
+                      type='time'
+                      value={form.end_time}
+                      onChange={event =>
+                        setForm(current => ({
+                          ...current,
+                          end_time: event.target.value
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <label>
+                    Duration (minutes)
+                    <input
+                      type='number'
+                      value={form.duration_minutes}
+                      onChange={event =>
+                        setForm(current => ({
+                          ...current,
+                          duration_minutes: event.target.value
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+              </fieldset>
+
+              <fieldset className='full-width checkbox-fieldset'>
                 <legend>Units and cohort groups</legend>
                 <p className='muted'>
                   Add one group for each unit. Assign each cohort to the unit
-                  it will sit, even when groups are from different years. All
-                  groups share the date, time, and venue allocations below.
+                  it will sit, even when groups are from different years. Set
+                  the exam schedule above before assigning venues to each
+                  group.
                 </p>
                 <div className='stack-form'>
                   {form.unit_groups.map((group, groupIndex) => {
@@ -1516,68 +1619,6 @@ export default function ExamsPage () {
                   )}
                 </div>
               </fieldset>
-
-              <label>
-                Exam date
-                <input
-                  type='date'
-                  value={form.exam_date}
-                  min={todayInputDate()}
-                  onChange={event =>
-                    setForm(current => ({
-                      ...current,
-                      exam_date: event.target.value
-                    }))
-                  }
-                />
-              </label>
-
-              <label>
-                Start time
-                <input
-                  type='time'
-                  value={form.start_time}
-                  min={
-                    form.exam_date === todayInputDate()
-                      ? new Date().toTimeString().slice(0, 5)
-                      : undefined
-                  }
-                  onChange={event =>
-                    setForm(current => ({
-                      ...current,
-                      start_time: event.target.value
-                    }))
-                  }
-                />
-              </label>
-
-              <label>
-                End time
-                <input
-                  type='time'
-                  value={form.end_time}
-                  onChange={event =>
-                    setForm(current => ({
-                      ...current,
-                      end_time: event.target.value
-                    }))
-                  }
-                />
-              </label>
-
-              <label>
-                Duration (minutes)
-                <input
-                  type='number'
-                  value={form.duration_minutes}
-                  onChange={event =>
-                    setForm(current => ({
-                      ...current,
-                      duration_minutes: event.target.value
-                    }))
-                  }
-                />
-              </label>
 
               <label className='full-width'>
                 Instructions

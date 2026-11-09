@@ -27,15 +27,18 @@ export const validateAcademicPeriod = async (
   }
 
   const [units] = await connection.execute(
-    `SELECT id, semester_type_id, year_level
+    `SELECT id, code, name, semester_type_id, year_level
      FROM units WHERE id = ? AND is_active = TRUE`,
     [Number(unitId)]
   )
   const unit = units[0]
   if (!unit) throw new Error('The selected unit is not active or does not exist.')
+  const unitLabel = `${unit.code || `Unit ${unit.id}`} — ${
+    unit.name || 'Unnamed unit'
+  } (ID ${unit.id})`
   if (Number(unit.semester_type_id) !== Number(period.semester_type_id)) {
     throw new Error(
-      'The selected unit does not belong to this semester type.'
+      `${unitLabel} does not belong to the selected semester type.`
     )
   }
   const selectedStudyYear = Number(studyYear || unit.year_level)
@@ -49,16 +52,47 @@ export const validateAcademicPeriod = async (
 
   const normalizedProgrammeIds = [...new Set(programmeIds.map(Number))]
   const [unitProgrammes] = await connection.execute(
-    'SELECT programme_id FROM unit_programmes WHERE unit_id = ?',
+    `SELECT up.programme_id, p.code AS programme_code,
+        p.name AS programme_name
+     FROM unit_programmes up
+     JOIN programmes p ON p.id = up.programme_id
+     WHERE up.unit_id = ?`,
     [Number(unitId)]
   )
   const unitProgrammeIds = unitProgrammes.map(row => Number(row.programme_id))
-  if (
-    normalizedProgrammeIds.some(
-      programmeId => !unitProgrammeIds.includes(programmeId)
+  const missingProgrammeIds = normalizedProgrammeIds.filter(
+    programmeId => !unitProgrammeIds.includes(programmeId)
+  )
+  if (missingProgrammeIds.length) {
+    const [missingProgrammes] = await connection.execute(
+      `SELECT id, code, name FROM programmes
+       WHERE id IN (${missingProgrammeIds.map(() => '?').join(',')})`,
+      missingProgrammeIds
     )
-  ) {
-    throw new Error('The unit is not associated with every selected programme.')
+    const programmeLabels = new Map(
+      missingProgrammes.map(programme => [
+        Number(programme.id),
+        `${programme.code || `Programme ${programme.id}`} — ${
+          programme.name || 'Unnamed programme'
+        } (ID ${programme.id})`
+      ])
+    )
+    const missingLabels = missingProgrammeIds.map(
+      id => programmeLabels.get(id) || `Programme ${id}`
+    )
+    const associatedLabels = unitProgrammes.map(
+      programme =>
+        `${programme.programme_code || `Programme ${programme.programme_id}`} — ${
+          programme.programme_name || 'Unnamed programme'
+        } (ID ${programme.programme_id})`
+    )
+    throw new Error(
+      `${unitLabel} is not associated with selected programme(s): ${missingLabels.join(
+        ', '
+      )}. Currently associated programme(s): ${
+        associatedLabels.join(', ') || 'none'
+      }. Check the unit's programme assignments or select the correct programme/cohort.`
+    )
   }
 
   const uniqueCohortIds = [...new Set(cohortIds.map(Number))]

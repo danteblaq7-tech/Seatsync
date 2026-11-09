@@ -7,6 +7,7 @@ import {
   getExamUnitGroups,
   validateExamSittingCapacity
 } from './exams/examSitting.js'
+import { uniqueScheduleIds } from './scheduling/uniqueScheduleIds.js'
 
 const run = async (connection, sql, params = []) => {
   const [rows] = await connection.execute(sql, params)
@@ -648,6 +649,15 @@ export const publishScheduleDrafts = async (draftReferences, actor) => {
     for (const draft of drafts) {
       const payload = draft?.payload || {}
       if (draft.kind === 'timetable') {
+        const normalizedPayload = {
+          ...payload,
+          programme_ids: uniqueScheduleIds(
+            get(payload, 'programme_ids', 'programmeIds')
+          ),
+          cohort_ids: uniqueScheduleIds(
+            get(payload, 'cohort_ids', 'cohortIds')
+          )
+        }
         const lecturerId = Number(get(payload, 'lecturer_id', 'lecturerId'))
         if ((actor?.roles || []).includes('LECTURER')) {
           const [rows] = await connection.execute(
@@ -659,7 +669,7 @@ export const publishScheduleDrafts = async (draftReferences, actor) => {
               'Lecturers may only publish their own timetable events.'
             )
         }
-        await assertNoTimetableConflict(connection, payload)
+        await assertNoTimetableConflict(connection, normalizedPayload)
         const [result] = await connection.execute(
           `INSERT INTO timetable_entries
           (academic_year_id, semester_id, unit_id, cohort_id, lecturer_id, venue_id,
@@ -669,7 +679,7 @@ export const publishScheduleDrafts = async (draftReferences, actor) => {
             Number(get(payload, 'academic_year_id', 'academicYearId')),
             Number(get(payload, 'semester_id', 'semesterId')),
             Number(get(payload, 'course_id', 'courseId')),
-            Number((get(payload, 'cohort_ids', 'cohortIds') || [])[0]),
+            normalizedPayload.cohort_ids[0],
             lecturerId,
             Number(get(payload, 'venue_id', 'venueId')),
             get(payload, 'day_of_week', 'dayOfWeek'),
@@ -681,19 +691,13 @@ export const publishScheduleDrafts = async (draftReferences, actor) => {
           ]
         )
         const eventId = result.insertId
-        for (const programmeId of (
-          get(payload, 'programme_ids', 'programmeIds') || []
-        )
-          .map(Number)
-          .filter(Boolean)) {
+        for (const programmeId of normalizedPayload.programme_ids) {
           await connection.execute(
             'INSERT INTO timetable_entry_programmes (timetable_entry_id, programme_id) VALUES (?, ?)',
             [eventId, programmeId]
           )
         }
-        for (const cohortId of (get(payload, 'cohort_ids', 'cohortIds') || [])
-          .map(Number)
-          .filter(Boolean)) {
+        for (const cohortId of normalizedPayload.cohort_ids) {
           await connection.execute(
             'INSERT INTO timetable_entry_cohorts (timetable_entry_id, cohort_id) VALUES (?, ?)',
             [eventId, cohortId]
@@ -707,7 +711,7 @@ export const publishScheduleDrafts = async (draftReferences, actor) => {
           [
             actor.id,
             eventId,
-            JSON.stringify({ ...payload, status: 'SCHEDULED' })
+            JSON.stringify({ ...normalizedPayload, status: 'SCHEDULED' })
           ]
         )
       } else if (draft.kind === 'exam_update') {

@@ -440,6 +440,8 @@ export const cancelScheduleOverride = async ({
     : [requesterRoles]
   const connection = await db.getConnection()
   let result
+  let notificationRecipients = []
+  let notificationDetails
   try {
     await connection.beginTransaction()
     const [rows] = await connection.execute(
@@ -474,6 +476,88 @@ export const cancelScheduleOverride = async ({
       override.original_start_time ?? override.recurring_start_time
     const originalEndTime =
       override.original_end_time ?? override.recurring_end_time
+    const [detailsRows, cohortRows, recipientRows] = await Promise.all([
+      connection.execute(
+        `SELECT u.code AS unit_code, u.name AS unit_name,
+           DAYNAME(so.effective_date) AS makeup_day,
+           TIME_FORMAT(so.new_start_time, '%H:%i') AS makeup_start_time,
+           TIME_FORMAT(so.new_end_time, '%H:%i') AS makeup_end_time,
+           TIME_FORMAT(
+             COALESCE(so.original_start_time, te.start_time), '%H:%i'
+           ) AS original_start_time,
+           TIME_FORMAT(
+             COALESCE(so.original_end_time, te.end_time), '%H:%i'
+           ) AS original_end_time,
+           new_venue.code AS new_venue_code,
+           new_venue.name AS new_venue_name,
+           original_venue.code AS original_venue_code,
+           original_venue.name AS original_venue_name
+         FROM schedule_overrides so
+         JOIN timetable_entries te ON te.id = so.timetable_entry_id
+         JOIN units u ON u.id = te.unit_id
+         LEFT JOIN venues new_venue ON new_venue.id = so.new_venue_id
+         LEFT JOIN venues original_venue
+           ON original_venue.id = COALESCE(so.original_venue_id, te.venue_id)
+         WHERE so.id = ?`,
+        [Number(override.id)]
+      ),
+      connection.execute(
+        `SELECT DISTINCT c.name
+         FROM cohorts c
+         WHERE c.id IN (
+           SELECT te.cohort_id FROM timetable_entries te
+           WHERE te.id = ? AND te.cohort_id IS NOT NULL
+           UNION
+           SELECT tec.cohort_id FROM timetable_entry_cohorts tec
+           WHERE tec.timetable_entry_id = ?
+         )
+         ORDER BY c.name`,
+        [
+          Number(override.timetable_entry_id),
+          Number(override.timetable_entry_id)
+        ]
+      ),
+      connection.execute(
+        `SELECT DISTINCT audience.user_id FROM (
+           SELECT s.user_id
+           FROM timetable_entries te
+           JOIN students s ON s.cohort_id = te.cohort_id
+           WHERE te.id = ? AND s.status = 'ACTIVE' AND s.user_id IS NOT NULL
+           UNION
+           SELECT s.user_id
+           FROM timetable_entry_cohorts tec
+           JOIN students s ON s.cohort_id = tec.cohort_id
+           WHERE tec.timetable_entry_id = ?
+             AND s.status = 'ACTIVE' AND s.user_id IS NOT NULL
+           UNION
+           SELECT rep_user.user_id
+           FROM cohort_representatives cr
+           JOIN students rep_student ON rep_student.id = cr.student_id
+           JOIN users rep_user ON rep_user.id = rep_student.user_id
+           WHERE cr.is_active = TRUE
+             AND (cr.end_date IS NULL OR cr.end_date >= CURDATE())
+             AND cr.cohort_id IN (
+               SELECT te.cohort_id FROM timetable_entries te
+               WHERE te.id = ? AND te.cohort_id IS NOT NULL
+               UNION
+               SELECT tec.cohort_id FROM timetable_entry_cohorts tec
+               WHERE tec.timetable_entry_id = ?
+             )
+         ) audience
+         WHERE audience.user_id IS NOT NULL`,
+        [
+          Number(override.timetable_entry_id),
+          Number(override.timetable_entry_id),
+          Number(override.timetable_entry_id),
+          Number(override.timetable_entry_id)
+        ]
+      )
+    ])
+    notificationDetails = detailsRows[0][0]
+    notificationDetails.cohort_names = cohortRows[0]
+      .map(row => row.name)
+      .join(', ')
+    notificationRecipients = recipientRows[0].map(row => Number(row.user_id))
     const conflicts = await restorationConflictMessages(
       connection,
       override,
@@ -526,6 +610,51 @@ export const cancelScheduleOverride = async ({
   emitSocketEvent('timetable:changed', {
     action: 'makeup-class-cancelled',
     ids: [result.id]
+  })
+  const details = notificationDetails || {}
+  const unitLabel = [details.unit_code, details.unit_name]
+    .filter(Boolean)
+    .join(' · ') || 'Class'
+  const makeupVenue = [details.new_venue_code, details.new_venue_name]
+    .filter(Boolean)
+    .join(' · ') || 'the assigned make-up venue'
+  const originalVenue = [
+    details.original_venue_code,
+    details.original_venue_name
+  ]
+    .filter(Boolean)
+    .join(' · ') || 'the original venue'
+  const cohortLabel = details.cohort_names
+    ? ` for ${details.cohort_names}`
+    : ''
+  const restorationMessage = result.originalRestored
+    ? `The original class venue and time have been restored to ${originalVenue}, ${details.original_start_time}–${details.original_end_time}.`
+    : `The original venue/time could not be restored because of a booking conflict. The lecturer or administrator should arrange another make-up class.`
+  const notificationMessage =
+    `The make-up class${cohortLabel} for ${unitLabel} has been cancelled. ` +
+    `It was scheduled for ${details.makeup_day}, ${override.effective_date}, ` +
+    `${details.makeup_start_time}–${details.makeup_end_time} at ${makeupVenue}. ` +
+    `${restorationMessage}`
+  const notificationResults = await Promise.allSettled(
+    notificationRecipients.map(userId =>
+      createNotification({
+        userId,
+        type: 'schedule:makeup_cancelled',
+        title: 'Make-up class cancelled',
+        message: notificationMessage,
+        entityType: 'schedule_override',
+        entityId: result.id
+      })
+    )
+  )
+  notificationResults.forEach((notificationResult, index) => {
+    if (notificationResult.status === 'rejected') {
+      console.error('[SCHEDULE][MAKEUP_CANCELLATION_NOTIFICATION_FAILED]', {
+        overrideId: result.id,
+        userId: notificationRecipients[index],
+        error: notificationResult.reason?.message || 'Unknown notification error'
+      })
+    }
   })
   return result
 }

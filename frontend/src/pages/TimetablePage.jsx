@@ -8,6 +8,8 @@ import { useAuth } from '../context/AuthContext'
 import ScrollableSelect from '../components/ScrollableSelect'
 import usePendingScheduleDrafts from '../hooks/usePendingScheduleDrafts'
 import { SOCKET_BASE_URL } from '../config.js'
+import { canCompareVenueConflict } from '../utils/timetableConflicts.js'
+import { resolveProgrammeIds } from '../utils/programmeSelection.js'
 
 const toArray = value => {
   if (Array.isArray(value)) return value
@@ -225,11 +227,38 @@ export default function TimetablePage () {
   const [makeupMessageIsWarning, setMakeupMessageIsWarning] = useState(false)
   const [selectedRollbackEventIds, setSelectedRollbackEventIds] = useState([])
   const [selectedEvent, setSelectedEvent] = useState(null)
-
-  useEffect(() => {
-    setMakeupMessage('')
-    setMakeupMessageIsWarning(false)
-  }, [selectedEvent?.id])
+  const timetableFilterQuery = useMemo(() => {
+    const params = new URLSearchParams()
+    const filters = {
+      academicYear: selectedAcademicYear,
+      semester: selectedSemester,
+      programme: selectedProgramme,
+      cohort: selectedCohort,
+      lecturer: selectedLecturer,
+      venue: selectedVenue,
+      eventType: selectedEventType,
+      day: selectedDay,
+      startTime: filterStartTime,
+      endTime: filterEndTime,
+      search
+    }
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value && value !== 'all') params.set(key, value)
+    })
+    return params.toString()
+  }, [
+    filterEndTime,
+    filterStartTime,
+    search,
+    selectedAcademicYear,
+    selectedCohort,
+    selectedDay,
+    selectedEventType,
+    selectedLecturer,
+    selectedProgramme,
+    selectedSemester,
+    selectedVenue
+  ])
 
   useEffect(() => {
     if (!formError) return undefined
@@ -282,9 +311,11 @@ export default function TimetablePage () {
     isLoading,
     error
   } = useQuery({
-    queryKey: ['timetable'],
+    queryKey: ['timetable', timetableFilterQuery],
     queryFn: async () => {
-      const response = await api.get('/api/timetable')
+      const response = await api.get(
+        `/api/timetable${timetableFilterQuery ? `?${timetableFilterQuery}` : ''}`
+      )
       return toArray(response)
     }
   })
@@ -380,9 +411,15 @@ export default function TimetablePage () {
   })
 
   const { data: exams = [] } = useQuery({
-    queryKey: ['timetable-exams'],
+    queryKey: ['timetable-exams', timetableFilterQuery],
     queryFn: async () =>
-      toArray(await api.get('/api/exams?scope=timetable'))
+      toArray(
+        await api.get(
+          `/api/exams?scope=timetable${
+            timetableFilterQuery ? `&${timetableFilterQuery}` : ''
+          }`
+        )
+      )
   })
 
   const selectedEntryUnit = courses.find(
@@ -900,12 +937,17 @@ export default function TimetablePage () {
         secondIndex += 1
       ) {
         const second = conflictCandidateRows[secondIndex]
+        if (!canCompareVenueConflict(first, second)) continue
         const secondStart = timeToMinutes(second.start_time || second.startTime)
         const secondEnd = timeToMinutes(second.end_time || second.endTime)
         const secondVenues = venueIdsForEvent(second)
-        const sameDay =
-          weekdayKey(first.day_of_week || first.dayOfWeek) ===
-          weekdayKey(second.day_of_week || second.dayOfWeek)
+        const firstIsExam =
+          String(first.event_type || first.eventType || '').toUpperCase() ===
+            'EXAM' || String(first.id || '').startsWith('exam-')
+        const sameDay = firstIsExam
+          ? true
+          : weekdayKey(first.day_of_week || first.dayOfWeek) ===
+            weekdayKey(second.day_of_week || second.dayOfWeek)
         const sharesVenue = [...firstVenues].some(id => secondVenues.has(id))
 
         if (
@@ -1096,6 +1138,14 @@ export default function TimetablePage () {
       values.programmeIds ?? values.programme_ids,
       undefined
     )
+    const cohortIds = idList(
+      values.cohortIds ?? values.cohort_ids,
+      values.cohort_id ?? values.cohortId
+    )
+    const cohortProgrammeIds = cohorts
+      .filter(cohort => cohortIds.includes(String(cohort.id)))
+      .map(cohort => cohort.programme_id ?? cohort.programmeId)
+      .filter(value => value !== undefined && value !== null)
     const course = courses.find(
       item => String(item.id) === String(values.course_id ?? values.courseId)
     )
@@ -1103,10 +1153,16 @@ export default function TimetablePage () {
       course?.programmeIds ?? course?.programme_ids,
       undefined
     )
-    const selectedProgrammes = programmes.filter(
-      item =>
-        programmeIds.includes(String(item.id)) ||
-        courseProgrammes.includes(String(item.id))
+    const hasAssignedProgrammes =
+      values.programmeIds !== undefined ||
+      values.programme_ids !== undefined
+    const selectedProgrammeIds = resolveProgrammeIds(
+      hasAssignedProgrammes ? programmeIds : undefined,
+      courseProgrammes,
+      cohortProgrammeIds.length ? cohortProgrammeIds : undefined
+    )
+    const selectedProgrammes = programmes.filter(item =>
+      selectedProgrammeIds.includes(String(item.id))
     )
     const departmentIds = [
       ...new Set(
@@ -1135,10 +1191,7 @@ export default function TimetablePage () {
       faculty_ids: facultyIds,
       department_ids: departmentIds,
       programme_ids: selectedProgrammes.map(item => String(item.id)),
-      cohort_ids: idList(
-        values.cohortIds ?? values.cohort_ids,
-        values.cohort_id ?? values.cohortId
-      ),
+      cohort_ids: cohortIds,
       lecturer_id: String(values.lecturer_id ?? values.lecturerId ?? ''),
       venue_id: String(values.venue_id ?? values.venueId ?? ''),
       day_of_week: weekdayKey(values.day_of_week ?? values.dayOfWeek ?? 'Mon'),
@@ -1522,7 +1575,7 @@ export default function TimetablePage () {
           </div>
           {pendingSchedule.publishError && (
             <div className='schedule-conflict-alert' role='alert'>
-              <strong>Schedule conflict</strong>
+              <strong>Unable to publish timetable</strong>
               <span>{pendingSchedule.publishError}</span>
             </div>
           )}

@@ -66,6 +66,17 @@ test('student class reps see only their cohort exams on the timetable', () => {
   assert.deepEqual(timetableScope.params, [21, 21])
 })
 
+test('multi-role timetable exam visibility combines each assigned group scope', () => {
+  const timetableScope = getExamVisibility(
+    { id: 21, roles: ['STUDENT', 'LECTURER'] },
+    { timetable: true }
+  )
+
+  assert.match(timetableScope.clause, /evs\.user_id = \?/)
+  assert.match(timetableScope.clause, /evl\.user_id = \?/)
+  assert.deepEqual(timetableScope.params, [21, 21, 21])
+})
+
 test('class representatives can view all exams without admin actions', () => {
   assert.deepEqual(getExamVisibility({ id: 22, roles: ['CLASS_REP'] }), {
     clause: '',

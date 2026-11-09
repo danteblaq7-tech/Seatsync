@@ -13,8 +13,17 @@ const makeConnection = ({
     academic_start_date: '2025-09-01',
     academic_end_date: '2026-08-31'
   },
-  unit = { id: 12, semester_type_id: 1, year_level: 2 },
-  unitProgrammes = [{ programme_id: 4 }],
+  unit = {
+    id: 12,
+    code: 'CSC202',
+    name: 'Data Structures',
+    semester_type_id: 1,
+    year_level: 2
+  },
+  unitProgrammes = [
+    { programme_id: 4, programme_code: 'BSc CS', programme_name: 'Computer Science' }
+  ],
+  programmes = [],
   assignedTypes = [{ cohort_type_id: 5 }],
   progressions = [
     {
@@ -33,6 +42,7 @@ const makeConnection = ({
     if (sql.includes('FROM semesters s')) return [[period]]
     if (sql.includes('FROM units')) return [[unit]]
     if (sql.includes('FROM unit_programmes')) return [unitProgrammes]
+    if (sql.includes('FROM programmes')) return [programmes]
     if (sql.includes('FROM cohort_progressions')) return [progressions]
     if (sql.includes('FROM lecturer_cohort_types')) return [assignedTypes]
     throw new Error(`Unexpected validation query: ${sql}`)
@@ -98,10 +108,43 @@ test('allows different intake cohorts to share the same cohort type', async () =
 test('rejects a unit assigned to a different semester type', async () => {
   await assert.rejects(
     validateAcademicPeriod(
-      makeConnection({ unit: { id: 12, semester_type_id: 2, year_level: 2 } }),
+      makeConnection({
+        unit: {
+          id: 12,
+          code: 'CSC202',
+          name: 'Data Structures',
+          semester_type_id: 2,
+          year_level: 2
+        }
+      }),
       validSelection
     ),
-    /does not belong to this semester type/
+    /CSC202 — Data Structures \(ID 12\) does not belong to the selected semester type/
+  )
+})
+
+test('reports the unit and programme details when a selected programme is not mapped', async () => {
+  await assert.rejects(
+    validateAcademicPeriod(
+      makeConnection({
+        unitProgrammes: [
+          {
+            programme_id: 4,
+            programme_code: 'BSc CS',
+            programme_name: 'Computer Science'
+          }
+        ],
+        programmes: [
+          {
+            id: 8,
+            code: 'BEng',
+            name: 'Engineering'
+          }
+        ]
+      }),
+      { ...validSelection, programmeIds: [4, 8] }
+    ),
+    /CSC202 — Data Structures \(ID 12\).*BEng — Engineering \(ID 8\).*BSc CS — Computer Science \(ID 4\)/
   )
 })
 
