@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { io } from 'socket.io-client'
 import { api } from '../api/client'
-import { formatDateOnly } from '../utils/dateOnly'
+import { formatDateOnly, weekdayFromDateOnly } from '../utils/dateOnly'
 import ConfirmActionModal from '../components/ConfirmActionModal'
 import { useAuth } from '../context/AuthContext'
 import { SOCKET_BASE_URL } from '../config.js'
@@ -38,6 +38,7 @@ export default function VenuesPage () {
   const [showAvailabilityModal, setShowAvailabilityModal] = useState(false)
   const [availabilityFilters, setAvailabilityFilters] = useState({
     day: 'Monday',
+    date: '',
     startTime: '',
     endTime: '',
     capacity: ''
@@ -250,6 +251,7 @@ export default function VenuesPage () {
         if (!availabilitySearch) return []
         const params = new URLSearchParams()
         if (availabilitySearch.day) params.set('day', availabilitySearch.day)
+        if (availabilitySearch.date) params.set('date', availabilitySearch.date)
         if (availabilitySearch.startTime)
           params.set('startTime', availabilitySearch.startTime)
         if (availabilitySearch.endTime)
@@ -625,9 +627,31 @@ export default function VenuesPage () {
             <div className='stack-form venue-availability-form'>
               <div className='form-grid'>
                 <label>
-                  Day
+                  Specific date (optional)
+                  <input
+                    type='date'
+                    value={availabilityFilters.date}
+                    onChange={event => {
+                      const date = event.target.value
+                      setAvailabilityFilters(current => ({
+                        ...current,
+                        date,
+                        ...(date
+                          ? {
+                              day: weekdayFromDateOnly(date, {
+                                weekday: 'long'
+                              })
+                            }
+                          : {})
+                      }))
+                    }}
+                  />
+                </label>
+                <label>
+                  Day{availabilityFilters.date ? ' (from date)' : ''}
                   <select
                     value={availabilityFilters.day}
+                    disabled={Boolean(availabilityFilters.date)}
                     onChange={event =>
                       setAvailabilityFilters(current => ({
                         ...current,
@@ -720,6 +744,7 @@ export default function VenuesPage () {
                   onClick={() => {
                     setAvailabilityFilters({
                       day: 'Monday',
+                      date: '',
                       startTime: '',
                       endTime: '',
                       capacity: ''
@@ -757,7 +782,9 @@ export default function VenuesPage () {
                 )
               ) : (
                 <p>
-                  Choose a day, time range, and capacity to see matching venues.
+                  Choose a day or specific date, time range, and capacity to
+                  see matching venues. Select a date to include make-up classes
+                  and venue changes scheduled for that day.
                 </p>
               )}
             </div>

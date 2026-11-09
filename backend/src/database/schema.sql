@@ -503,10 +503,12 @@ CREATE TABLE IF NOT EXISTS exams (
   duration_minutes INT NOT NULL,
   status VARCHAR(30) NOT NULL DEFAULT 'SCHEDULED',
   instructions TEXT,
+  sitting_group_id VARCHAR(80) NULL,
   created_by INT,
   updated_by INT,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_exams_sitting_group (sitting_group_id),
   FOREIGN KEY (academic_year_id) REFERENCES academic_years(id) ON DELETE RESTRICT,
   FOREIGN KEY (semester_id) REFERENCES semesters(id) ON DELETE RESTRICT,
   FOREIGN KEY (unit_id) REFERENCES units(id) ON DELETE RESTRICT

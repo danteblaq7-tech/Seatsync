@@ -5,7 +5,7 @@ import {
 } from '../services/timetableDomainService.js'
 
 export const getTimetable = async (req, res) => {
-  res.json({ data: await listTimetableEntries(req.user) })
+  res.json({ data: await listTimetableEntries(req.user, req.query) })
 }
 
 export const addTimetableEntry = async (req, res) => {

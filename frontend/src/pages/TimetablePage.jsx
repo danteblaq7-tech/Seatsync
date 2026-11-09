@@ -8,6 +8,8 @@ import { useAuth } from '../context/AuthContext'
 import ScrollableSelect from '../components/ScrollableSelect'
 import usePendingScheduleDrafts from '../hooks/usePendingScheduleDrafts'
 import { SOCKET_BASE_URL } from '../config.js'
+import { canCompareVenueConflict } from '../utils/timetableConflicts.js'
+import { resolveProgrammeIds } from '../utils/programmeSelection.js'
 
 const toArray = value => {
   if (Array.isArray(value)) return value
@@ -221,14 +223,42 @@ export default function TimetablePage () {
   const [form, setForm] = useState(emptyEntry)
   const [formError, setFormError] = useState('')
   const [capacityWarning, setCapacityWarning] = useState(null)
-  const [makeupForm, setMakeupForm] = useState({
-    effective_date: '',
-    new_venue_id: '',
-    new_start_time: '',
-    new_end_time: '',
-    reason: ''
-  })
   const [makeupMessage, setMakeupMessage] = useState('')
+  const [makeupMessageIsWarning, setMakeupMessageIsWarning] = useState(false)
+  const [selectedRollbackEventIds, setSelectedRollbackEventIds] = useState([])
+  const [selectedEvent, setSelectedEvent] = useState(null)
+  const timetableFilterQuery = useMemo(() => {
+    const params = new URLSearchParams()
+    const filters = {
+      academicYear: selectedAcademicYear,
+      semester: selectedSemester,
+      programme: selectedProgramme,
+      cohort: selectedCohort,
+      lecturer: selectedLecturer,
+      venue: selectedVenue,
+      eventType: selectedEventType,
+      day: selectedDay,
+      startTime: filterStartTime,
+      endTime: filterEndTime,
+      search
+    }
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value && value !== 'all') params.set(key, value)
+    })
+    return params.toString()
+  }, [
+    filterEndTime,
+    filterStartTime,
+    search,
+    selectedAcademicYear,
+    selectedCohort,
+    selectedDay,
+    selectedEventType,
+    selectedLecturer,
+    selectedProgramme,
+    selectedSemester,
+    selectedVenue
+  ])
 
   useEffect(() => {
     if (!formError) return undefined
@@ -246,7 +276,6 @@ export default function TimetablePage () {
     )
     return () => cancelAnimationFrame(frame)
   }, [editingDraftId, editingEntryId, showForm])
-  const [selectedEvent, setSelectedEvent] = useState(null)
 
   useEffect(() => {
     const socket = io(SOCKET_BASE_URL, { transports: ['websocket'] })
@@ -260,8 +289,11 @@ export default function TimetablePage () {
     socket.on('timetable:override_created', () => {
       queryClient.invalidateQueries({ queryKey: ['timetable'] })
       queryClient.invalidateQueries({
-        queryKey: ['makeup-venue-availability']
+        queryKey: ['timetable-venue-availability']
       })
+    })
+    socket.on('timetable:override_cancelled', () => {
+      queryClient.invalidateQueries({ queryKey: ['timetable'] })
       queryClient.invalidateQueries({
         queryKey: ['timetable-venue-availability']
       })
@@ -279,9 +311,11 @@ export default function TimetablePage () {
     isLoading,
     error
   } = useQuery({
-    queryKey: ['timetable'],
+    queryKey: ['timetable', timetableFilterQuery],
     queryFn: async () => {
-      const response = await api.get('/api/timetable')
+      const response = await api.get(
+        `/api/timetable${timetableFilterQuery ? `?${timetableFilterQuery}` : ''}`
+      )
       return toArray(response)
     }
   })
@@ -377,22 +411,16 @@ export default function TimetablePage () {
   })
 
   const { data: exams = [] } = useQuery({
-    queryKey: ['timetable-exams'],
-    queryFn: async () => toArray(await api.get('/api/exams'))
-  })
-
-  const makeupCohortIds = Array.isArray(selectedEvent?.cohortIds)
-    ? selectedEvent.cohortIds.map(Number)
-    : [Number(selectedEvent?.cohort_id ?? selectedEvent?.cohortId)].filter(
-        Boolean
+    queryKey: ['timetable-exams', timetableFilterQuery],
+    queryFn: async () =>
+      toArray(
+        await api.get(
+          `/api/exams?scope=timetable${
+            timetableFilterQuery ? `&${timetableFilterQuery}` : ''
+          }`
+        )
       )
-  const makeupCapacity = cohorts
-    .filter(cohort => makeupCohortIds.includes(Number(cohort.id)))
-    .reduce(
-      (total, cohort) =>
-        total + Number(cohort.student_count ?? cohort.studentCount ?? 0),
-      0
-    )
+  })
 
   const selectedEntryUnit = courses.find(
     unit => String(unit.id) === String(form.course_id)
@@ -471,32 +499,6 @@ export default function TimetablePage () {
         form.start_time &&
         form.end_time &&
         timeToMinutes(form.end_time) > timeToMinutes(form.start_time)
-    )
-  })
-
-  const { data: availableMakeupVenues = [] } = useQuery({
-    queryKey: [
-      'makeup-venue-availability',
-      selectedEvent?.id,
-      makeupForm.effective_date,
-      makeupForm.new_start_time,
-      makeupForm.new_end_time,
-      makeupCapacity
-    ],
-    queryFn: async () => {
-      const params = new URLSearchParams({
-        date: makeupForm.effective_date,
-        startTime: makeupForm.new_start_time,
-        endTime: makeupForm.new_end_time,
-        requiredCapacity: String(makeupCapacity),
-        excludeTimetableEntryId: String(selectedEvent?.id || '')
-      })
-      return toArray(await api.get(`/api/timetable/availability?${params}`))
-    },
-    enabled: Boolean(
-      makeupForm.effective_date &&
-        makeupForm.new_start_time &&
-        makeupForm.new_end_time
     )
   })
 
@@ -666,20 +668,6 @@ export default function TimetablePage () {
     } (${venue.capacity || 0} seats)`,
     searchText: venue.name || venue.venue_name
   }))
-  const makeupVenueOptions = (
-    makeupForm.effective_date &&
-    makeupForm.new_start_time &&
-    makeupForm.new_end_time
-      ? availableMakeupVenues
-      : venues.filter(venue => venue.status === 'ACTIVE')
-  ).map(venue => ({
-    value: venue.id,
-    label: `${venue.code ? `${venue.code} · ` : ''}${
-      venue.name || venue.venue_name
-    } (${venue.capacity || 0} seats)`,
-    searchText: venue.name || venue.venue_name
-  }))
-
   const venueFilterOptions = [
     { value: 'all', label: 'All venues' },
     ...venues.map(venue => ({
@@ -758,26 +746,32 @@ export default function TimetablePage () {
       setFormError(error.message || 'Unable to stage timetable event changes.')
   })
 
-  const makeupMutation = useMutation({
-    mutationFn: payload => api.post('/api/timetable/overrides', payload),
-    onSuccess: () => {
+  const cancelMakeupMutation = useMutation({
+    mutationFn: overrideId =>
+      api.post(`/api/timetable/overrides/${overrideId}/cancel`, {}),
+    onSuccess: response => {
+      const result = response?.data
+      setMakeupMessage(
+        result?.message || 'Make-up class cancelled and venue availability updated.'
+      )
+      setMakeupMessageIsWarning(!result?.originalRestored)
+      setSelectedEvent(current =>
+        current?.overrideId === result?.id
+          ? { ...current, isMakeup: false }
+          : current
+      )
       queryClient.invalidateQueries({ queryKey: ['timetable'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard-summary'] })
-      setMakeupForm({
-        effective_date: '',
-        new_venue_id: '',
-        new_start_time: '',
-        new_end_time: '',
-        reason: ''
+      queryClient.invalidateQueries({
+        queryKey: ['timetable-venue-availability']
       })
-      setMakeupMessage(
-        'Make-up class request submitted and recorded in the audit log.'
-      )
     },
-    onError: error =>
+    onError: error => {
       setMakeupMessage(
-        error.message || 'Unable to submit make-up class request.'
+        error.message || 'Unable to cancel the make-up class.'
       )
+      setMakeupMessageIsWarning(true)
+    }
   })
 
   const filteredRows = useMemo(() => {
@@ -899,15 +893,39 @@ export default function TimetablePage () {
     unitNameMap
   ])
 
+  const conflictCandidateRows = useMemo(() => {
+    const roles = user?.roles || []
+    if (roles.includes('ADMIN') || !roles.includes('CLASS_REP')) {
+      return filteredRows
+    }
+    const representativeCohortIds = new Set(
+      cohorts.map(cohort => String(cohort.id))
+    )
+    return filteredRows.filter(event => {
+      const eventCohortIds = [
+        ...(Array.isArray(event.cohortIds) ? event.cohortIds : []),
+        ...idList(event.cohort_ids, undefined),
+        ...(Array.isArray(event.cohortDetails)
+          ? event.cohortDetails.map(cohort => cohort.id ?? cohort.cohort_id)
+          : []),
+        event.cohort_id,
+        event.cohortId
+      ]
+        .filter(value => value !== undefined && value !== null && value !== '')
+        .map(String)
+      return eventCohortIds.some(id => representativeCohortIds.has(id))
+    })
+  }, [cohorts, filteredRows, user])
+
   const venueConflictData = useMemo(() => {
     const conflictIds = new Set()
     const pairs = []
     for (
       let firstIndex = 0;
-      firstIndex < filteredRows.length;
+      firstIndex < conflictCandidateRows.length;
       firstIndex += 1
     ) {
-      const first = filteredRows[firstIndex]
+      const first = conflictCandidateRows[firstIndex]
       const firstStart = timeToMinutes(first.start_time || first.startTime)
       const firstEnd = timeToMinutes(first.end_time || first.endTime)
       const firstVenues = venueIdsForEvent(first)
@@ -915,16 +933,21 @@ export default function TimetablePage () {
 
       for (
         let secondIndex = firstIndex + 1;
-        secondIndex < filteredRows.length;
+        secondIndex < conflictCandidateRows.length;
         secondIndex += 1
       ) {
-        const second = filteredRows[secondIndex]
+        const second = conflictCandidateRows[secondIndex]
+        if (!canCompareVenueConflict(first, second)) continue
         const secondStart = timeToMinutes(second.start_time || second.startTime)
         const secondEnd = timeToMinutes(second.end_time || second.endTime)
         const secondVenues = venueIdsForEvent(second)
-        const sameDay =
-          weekdayKey(first.day_of_week || first.dayOfWeek) ===
-          weekdayKey(second.day_of_week || second.dayOfWeek)
+        const firstIsExam =
+          String(first.event_type || first.eventType || '').toUpperCase() ===
+            'EXAM' || String(first.id || '').startsWith('exam-')
+        const sameDay = firstIsExam
+          ? true
+          : weekdayKey(first.day_of_week || first.dayOfWeek) ===
+            weekdayKey(second.day_of_week || second.dayOfWeek)
         const sharesVenue = [...firstVenues].some(id => secondVenues.has(id))
 
         if (
@@ -939,11 +962,11 @@ export default function TimetablePage () {
       }
     }
     return { conflictIds, pairs }
-  }, [filteredRows])
+  }, [conflictCandidateRows])
 
   const visibleRows =
     viewMode === 'conflicts'
-      ? filteredRows.filter(item =>
+      ? conflictCandidateRows.filter(item =>
           venueConflictData.conflictIds.has(eventIdentity(item))
         )
       : filteredRows
@@ -1115,6 +1138,14 @@ export default function TimetablePage () {
       values.programmeIds ?? values.programme_ids,
       undefined
     )
+    const cohortIds = idList(
+      values.cohortIds ?? values.cohort_ids,
+      values.cohort_id ?? values.cohortId
+    )
+    const cohortProgrammeIds = cohorts
+      .filter(cohort => cohortIds.includes(String(cohort.id)))
+      .map(cohort => cohort.programme_id ?? cohort.programmeId)
+      .filter(value => value !== undefined && value !== null)
     const course = courses.find(
       item => String(item.id) === String(values.course_id ?? values.courseId)
     )
@@ -1122,10 +1153,16 @@ export default function TimetablePage () {
       course?.programmeIds ?? course?.programme_ids,
       undefined
     )
-    const selectedProgrammes = programmes.filter(
-      item =>
-        programmeIds.includes(String(item.id)) ||
-        courseProgrammes.includes(String(item.id))
+    const hasAssignedProgrammes =
+      values.programmeIds !== undefined ||
+      values.programme_ids !== undefined
+    const selectedProgrammeIds = resolveProgrammeIds(
+      hasAssignedProgrammes ? programmeIds : undefined,
+      courseProgrammes,
+      cohortProgrammeIds.length ? cohortProgrammeIds : undefined
+    )
+    const selectedProgrammes = programmes.filter(item =>
+      selectedProgrammeIds.includes(String(item.id))
     )
     const departmentIds = [
       ...new Set(
@@ -1154,10 +1191,7 @@ export default function TimetablePage () {
       faculty_ids: facultyIds,
       department_ids: departmentIds,
       programme_ids: selectedProgrammes.map(item => String(item.id)),
-      cohort_ids: idList(
-        values.cohortIds ?? values.cohort_ids,
-        values.cohort_id ?? values.cohortId
-      ),
+      cohort_ids: cohortIds,
       lecturer_id: String(values.lecturer_id ?? values.lecturerId ?? ''),
       venue_id: String(values.venue_id ?? values.venueId ?? ''),
       day_of_week: weekdayKey(values.day_of_week ?? values.dayOfWeek ?? 'Mon'),
@@ -1342,6 +1376,14 @@ export default function TimetablePage () {
     })
   }
 
+  const rollbackEventsMutation = useMutation({
+    mutationFn: ids =>
+      pendingSchedule.rollbackToStaging(
+        ids.map(id => ({ kind: 'timetable', id }))
+      ),
+    onSuccess: () => setSelectedRollbackEventIds([])
+  })
+
   return (
     <div className='page-shell'>
       <div className='page-header'>
@@ -1357,7 +1399,11 @@ export default function TimetablePage () {
         >
           {[
             ['calendar', 'Calendar'],
-            ['conflicts', `Conflicts (${venueConflictData.pairs.length})`],
+            ...((user?.roles || []).some(role =>
+              ['ADMIN', 'CLASS_REP', 'LECTURER'].includes(role)
+            )
+              ? [['conflicts', `Conflicts (${venueConflictData.pairs.length})`]]
+              : []),
             ['list', 'List']
           ].map(([mode, label]) => (
             <button
@@ -1393,6 +1439,52 @@ export default function TimetablePage () {
               {showForm ? 'Close form' : 'Add entry'}
             </button>
           )}
+          {canScheduleEvents && (
+            <>
+              <button
+                type='button'
+                className='secondary-button'
+                onClick={() => {
+                  const eligibleIds = filteredRows
+                    .filter(
+                      item =>
+                        !item.isMakeup &&
+                        Number.isInteger(Number(item.id)) &&
+                        String(item.status || 'SCHEDULED').toUpperCase() ===
+                          'SCHEDULED'
+                    )
+                    .map(item => Number(item.id))
+                  setSelectedRollbackEventIds(current =>
+                    current.length === eligibleIds.length ? [] : eligibleIds
+                  )
+                  setViewMode('list')
+                }}
+              >
+                Select visible events
+              </button>
+              <button
+                type='button'
+                className='primary-button'
+                disabled={
+                  !selectedRollbackEventIds.length ||
+                  rollbackEventsMutation.isPending
+                }
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `Roll ${selectedRollbackEventIds.length} selected event(s) back to staging? They will be removed from the published timetable.`
+                    )
+                  ) {
+                    rollbackEventsMutation.mutate(selectedRollbackEventIds)
+                  }
+                }}
+              >
+                {rollbackEventsMutation.isPending
+                  ? 'Rolling back…'
+                  : `Rollback to staging (${selectedRollbackEventIds.length})`}
+              </button>
+            </>
+          )}
           {visiblePendingDrafts.length > 0 && (
             <button
               type='button'
@@ -1413,6 +1505,13 @@ export default function TimetablePage () {
           )}
         </div>
       </div>
+
+      {rollbackEventsMutation.error && (
+        <div className='schedule-conflict-alert' role='alert'>
+          <strong>Could not roll events back</strong>
+          <span>{rollbackEventsMutation.error.message}</span>
+        </div>
+      )}
 
       {visiblePendingDrafts.length > 0 && (
         <section className='content-panel pending-schedule-panel'>
@@ -1476,7 +1575,7 @@ export default function TimetablePage () {
           </div>
           {pendingSchedule.publishError && (
             <div className='schedule-conflict-alert' role='alert'>
-              <strong>Schedule conflict</strong>
+              <strong>Unable to publish timetable</strong>
               <span>{pendingSchedule.publishError}</span>
             </div>
           )}
@@ -2128,14 +2227,8 @@ export default function TimetablePage () {
                           }}
                           onClick={() => {
                             setSelectedEvent(item)
-                            setMakeupForm({
-                              effective_date: '',
-                              new_venue_id: '',
-                              new_start_time: '',
-                              new_end_time: '',
-                              reason: ''
-                            })
                             setMakeupMessage('')
+                            setMakeupMessageIsWarning(false)
                           }}
                           title={`${
                             item.unitCode ||
@@ -2211,19 +2304,33 @@ export default function TimetablePage () {
                   `${item.day_of_week}-${item.start_time}-${item.venue_id}`
                 }
               >
+                {canScheduleEvents &&
+                  !item.isMakeup &&
+                  Number.isInteger(Number(item.id)) &&
+                  String(item.status || 'SCHEDULED').toUpperCase() ===
+                    'SCHEDULED' && (
+                    <input
+                      type='checkbox'
+                      aria-label={`Select timetable event ${item.unitCode || item.unit_code || item.course_id}`}
+                      checked={selectedRollbackEventIds.includes(
+                        Number(item.id)
+                      )}
+                      onChange={event =>
+                        setSelectedRollbackEventIds(current =>
+                          event.target.checked
+                            ? [...current, Number(item.id)]
+                            : current.filter(id => id !== Number(item.id))
+                        )
+                      }
+                    />
+                  )}
                 <button
                   type='button'
                   className='timetable-list-event'
                   onClick={() => {
                     setSelectedEvent(item)
-                    setMakeupForm({
-                      effective_date: '',
-                      new_venue_id: '',
-                      new_start_time: '',
-                      new_end_time: '',
-                      reason: ''
-                    })
                     setMakeupMessage('')
+                    setMakeupMessageIsWarning(false)
                   }}
                 >
                   <span>
@@ -2380,6 +2487,12 @@ export default function TimetablePage () {
                       {selectedEvent.day_of_week || selectedEvent.dayOfWeek}
                     </dd>
                   </div>
+                  {selectedEvent.isMakeup && (
+                    <div>
+                      <dt>Make-up date</dt>
+                      <dd>{formatDateOnly(selectedEvent.effective_date)}</dd>
+                    </div>
+                  )}
                   {String(selectedEvent.id).startsWith('exam-') && (
                     <>
                       <div>
@@ -2517,140 +2630,54 @@ export default function TimetablePage () {
                 {(user?.roles || []).some(role =>
                   ['ADMIN', 'LECTURER'].includes(role)
                 ) &&
-                  !String(selectedEvent.id).startsWith('exam-') && (
-                    <form
-                      className='stack-form makeup-class-form responsive-form-panel'
-                      onSubmit={event => {
-                        event.preventDefault()
-                        setMakeupMessage('')
-                        if (!makeupForm.new_venue_id) {
-                          setMakeupMessage(
-                            'Select a venue for the make-up class.'
-                          )
-                          return
-                        }
-                        makeupMutation.mutate({
-                          timetableEntryId: Number(selectedEvent.id),
-                          effectiveDate: makeupForm.effective_date,
-                          originalVenueId: Number(
-                            selectedEvent.venue_id ?? selectedEvent.venueId
-                          ),
-                          newVenueId: Number(makeupForm.new_venue_id),
-                          originalStartTime:
-                            selectedEvent.start_time ?? selectedEvent.startTime,
-                          newStartTime: makeupForm.new_start_time,
-                          originalEndTime:
-                            selectedEvent.end_time ?? selectedEvent.endTime,
-                          newEndTime: makeupForm.new_end_time,
-                          reason: makeupForm.reason
-                        })
-                      }}
-                    >
+                  selectedEvent.isMakeup && (
+                    <div className='stack-form makeup-class-form responsive-form-panel'>
                       <div className='makeup-form-heading'>
                         <div>
                           <p className='eyebrow'>Schedule change</p>
-                          <h3>Request a temporary make-up class</h3>
+                          <h3>Cancel make-up class</h3>
                         </div>
                       </div>
-                      <div className='form-grid'>
-                        <label>
-                          Make-up date
-                          <input
-                            type='date'
-                            required
-                            value={makeupForm.effective_date}
-                            onChange={event =>
-                              setMakeupForm(current => ({
-                                ...current,
-                                effective_date: event.target.value,
-                                new_venue_id: ''
-                              }))
-                            }
-                          />
-                        </label>
-                        <label>
-                          Venue
-                          <ScrollableSelect
-                            required
-                            value={makeupForm.new_venue_id}
-                            options={makeupVenueOptions}
-                            placeholder='Select venue'
-                            ariaLabel='Select make-up class venue'
-                            onChange={value =>
-                              setMakeupForm(current => ({
-                                ...current,
-                                new_venue_id: value
-                              }))
-                            }
-                          />
-                        </label>
-                        <label>
-                          Start time
-                          <input
-                            type='time'
-                            required
-                            value={makeupForm.new_start_time}
-                            onChange={event =>
-                              setMakeupForm(current => ({
-                                ...current,
-                                new_start_time: event.target.value,
-                                new_venue_id: ''
-                              }))
-                            }
-                          />
-                        </label>
-                        <label>
-                          End time
-                          <input
-                            type='time'
-                            required
-                            value={makeupForm.new_end_time}
-                            onChange={event =>
-                              setMakeupForm(current => ({
-                                ...current,
-                                new_end_time: event.target.value,
-                                new_venue_id: ''
-                              }))
-                            }
-                          />
-                        </label>
-                        <label className='full-width'>
-                          Reason
-                          <input
-                            required
-                            value={makeupForm.reason}
-                            onChange={event =>
-                              setMakeupForm(current => ({
-                                ...current,
-                                reason: event.target.value
-                              }))
-                            }
-                            placeholder='Reason for the make-up class'
-                          />
-                        </label>
-                      </div>
-                      {makeupMessage && (
-                        <p
-                          className={
-                            makeupMutation.isError
-                              ? 'form-error'
-                              : 'success-message'
-                          }
-                        >
-                          {makeupMessage}
-                        </p>
-                      )}
+                      <p>
+                        This will free the make-up venue. The original class
+                        venue and time will be restored unless the venue has
+                        since been booked.
+                      </p>
                       <button
-                        type='submit'
-                        className='primary-button'
-                        disabled={makeupMutation.isPending}
+                        type='button'
+                        className='danger-button'
+                        disabled={cancelMakeupMutation.isPending}
+                        onClick={() => {
+                          setMakeupMessage('')
+                          if (
+                            window.confirm(
+                              'Cancel this make-up class? Its venue will become available again.'
+                            )
+                          ) {
+                            cancelMakeupMutation.mutate(
+                              Number(selectedEvent.overrideId)
+                            )
+                          }
+                        }}
                       >
-                        {makeupMutation.isPending
-                          ? 'Submitting...'
-                          : 'Submit make-up request'}
+                        {cancelMakeupMutation.isPending
+                          ? 'Cancelling...'
+                          : 'Cancel make-up class'}
                       </button>
-                    </form>
+                    </div>
                   )}
+                {makeupMessage && (
+                  <p
+                    className={
+                      makeupMessageIsWarning
+                        ? 'form-error'
+                        : 'success-message'
+                    }
+                    role={makeupMessageIsWarning ? 'alert' : 'status'}
+                  >
+                    {makeupMessage}
+                  </p>
+                )}
               </section>
             </div>
           )

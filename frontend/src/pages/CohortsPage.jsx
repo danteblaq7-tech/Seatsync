@@ -57,9 +57,11 @@ export default function CohortsPage () {
     const socket = io(SOCKET_BASE_URL, { transports: ['websocket'] })
     const refresh = () => {
       queryClient.invalidateQueries({ queryKey: ['cohorts'] })
+      queryClient.invalidateQueries({ queryKey: ['cohort-members'] })
       queryClient.invalidateQueries({ queryKey: ['cohort-profile-requests'] })
       queryClient.invalidateQueries({ queryKey: ['cohort-membership-requests'] })
       queryClient.invalidateQueries({ queryKey: ['cohort-progressions'] })
+      queryClient.invalidateQueries({ queryKey: ['cohort-request-counts'] })
     }
     socket.on('academic:updated', refresh)
     socket.on('timetable:changed', refresh)
@@ -112,6 +114,18 @@ export default function CohortsPage () {
     queryFn: async () =>
       toArray(await api.get('/api/academic/cohort-profile-requests')),
     enabled: canManageCohorts
+  })
+
+  const {
+    data: requestCounts,
+    isLoading: requestCountsLoading,
+    error: requestCountsError
+  } = useQuery({
+    queryKey: ['cohort-request-counts', user?.id],
+    queryFn: async () =>
+      (await api.get('/api/academic/cohort-request-counts')).data,
+    enabled: canManageProgression,
+    refetchInterval: 30000
   })
 
   const { data: programmes = [] } = useQuery({
@@ -181,6 +195,19 @@ export default function CohortsPage () {
     enabled: Boolean(selectedCohort?.id && canManageProgression)
   })
 
+  const {
+    data: cohortMembers = [],
+    isLoading: cohortMembersLoading,
+    error: cohortMembersError
+  } = useQuery({
+    queryKey: ['cohort-members', selectedCohort?.id],
+    queryFn: async () =>
+      toArray(
+        await api.get(`/api/academic/cohorts/${selectedCohort.id}/members`)
+      ),
+    enabled: Boolean(selectedCohort?.id && canManageProgression)
+  })
+
   const createCohortMutation = useMutation({
     mutationFn: async payload => {
       const response = await api.post('/api/academic/cohorts', payload)
@@ -241,6 +268,7 @@ export default function CohortsPage () {
       await Promise.all(
         [
           'cohort-membership-requests',
+          'cohort-members',
           'cohorts',
           'academic-cohorts',
           'cohort-progressions',
@@ -402,6 +430,10 @@ export default function CohortsPage () {
         <div>
           <p className='eyebrow'>Student groups</p>
           <h1>Cohorts</h1>
+          <p className='muted'>
+            Review academic requests and track each cohort through its study
+            periods.
+          </p>
         </div>
 
         {canManageCohorts && (
@@ -417,75 +449,136 @@ export default function CohortsPage () {
         )}
       </div>
 
-      {canManageCohorts && cohortProfileRequests.length > 0 && (
-        <section className='content-panel'>
-          <h2>Class representative cohort requests</h2>
-          <div className='academic-records-scroll'>
-            <table>
-              <thead>
-                <tr>
-                  <th>Representative</th>
-                  <th>Programme</th>
-                  <th>Intake</th>
-                  <th>Initial stage</th>
-                  <th>Academic period</th>
-                  <th>Reported students</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {cohortProfileRequests.map(request => (
-                  <tr key={request.id}>
-                    <td>
-                      {request.first_name} {request.last_name}
-                      <br />
-                      {request.email}
-                    </td>
-                    <td>
-                      {request.programme_code} · {request.programme_name}
-                    </td>
-                    <td>{request.intake_year}</td>
-                    <td>
-                      {request.cohort_type_name} (Year {request.study_year},
-                      Semester {request.semester_number})
-                    </td>
-                    <td>
-                      {request.semester_name}, {request.academic_year_name}
-                    </td>
-                    <td>{request.student_count}</td>
-                    <td>
-                      <button
-                        type='button'
-                        className='table-action'
-                        disabled={reviewProfileRequestMutation.isPending}
-                        onClick={() =>
-                          reviewProfileRequestMutation.mutate({
-                            requestId: request.id,
-                            decision: 'APPROVED'
-                          })
-                        }
-                      >
-                        Approve
-                      </button>{' '}
-                      <button
-                        type='button'
-                        className='table-action danger'
-                        disabled={reviewProfileRequestMutation.isPending}
-                        onClick={() =>
-                          reviewProfileRequestMutation.mutate({
-                            requestId: request.id,
-                            decision: 'REJECTED'
-                          })
-                        }
-                      >
-                        Reject
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+      <section
+        className='stats-grid cohort-stats-grid'
+        aria-label='Cohort dashboard'
+      >
+        <article className='stat-card primary'>
+          <span className='stat-label'>Cohorts</span>
+          <strong className='stat-value'>
+            {isLoading || error
+              ? '—'
+              : pagination.totalItems ?? data.length}
+          </strong>
+          <span className='cohort-stat-caption'>Registered student groups</span>
+        </article>
+        {canManageCohorts && (
+          <article className='stat-card warning'>
+            <span className='stat-label'>Profile requests</span>
+            <strong className='stat-value'>
+              {requestCountsLoading || requestCountsError
+                ? '—'
+                : requestCounts?.profileRequests ?? 0}
+            </strong>
+            <span className='cohort-stat-caption'>Awaiting admin review</span>
+          </article>
+        )}
+        {canManageProgression && (
+          <article className='stat-card secondary'>
+            <span className='stat-label'>Membership requests</span>
+            <strong className='stat-value'>
+              {requestCountsLoading || requestCountsError
+                ? '—'
+                : requestCounts?.membershipRequests ?? 0}
+            </strong>
+            <span className='cohort-stat-caption'>Awaiting cohort review</span>
+          </article>
+        )}
+      </section>
+      {requestCountsError && (
+        <p className='form-error' role='alert'>
+          Unable to refresh pending cohort request counts.
+        </p>
+      )}
+
+      {canManageCohorts && (
+        <section className='content-panel cohort-requests-panel'>
+          <div className='cohort-section-heading'>
+            <div>
+              <p className='eyebrow'>Needs your attention</p>
+              <h2>Class representative requests</h2>
+              <p className='muted'>
+                Verify a representative’s programme, intake, and starting
+                academic period.
+              </p>
+            </div>
+            <span className='cohort-request-total'>
+              {cohortProfileRequests.length} pending
+            </span>
           </div>
+          {cohortProfileRequests.length ? (
+            <div className='academic-records-scroll'>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Representative</th>
+                    <th>Programme</th>
+                    <th>Intake</th>
+                    <th>Initial stage</th>
+                    <th>Academic period</th>
+                    <th>Reported students</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cohortProfileRequests.map(request => (
+                    <tr key={request.id}>
+                      <td>
+                        {request.first_name} {request.last_name}
+                        <br />
+                        {request.email}
+                      </td>
+                      <td>
+                        {request.programme_code} · {request.programme_name}
+                      </td>
+                      <td>{request.intake_year}</td>
+                      <td>
+                        {request.cohort_type_name} (Year {request.study_year},
+                        Semester {request.semester_number})
+                      </td>
+                      <td>
+                        {request.semester_name}, {request.academic_year_name}
+                      </td>
+                      <td>{request.student_count}</td>
+                      <td>
+                        <button
+                          type='button'
+                          className='table-action'
+                          disabled={reviewProfileRequestMutation.isPending}
+                          onClick={() =>
+                            reviewProfileRequestMutation.mutate({
+                              requestId: request.id,
+                              decision: 'APPROVED'
+                            })
+                          }
+                        >
+                          Approve
+                        </button>{' '}
+                        <button
+                          type='button'
+                          className='table-action danger'
+                          disabled={reviewProfileRequestMutation.isPending}
+                          onClick={() =>
+                            reviewProfileRequestMutation.mutate({
+                              requestId: request.id,
+                              decision: 'REJECTED'
+                            })
+                          }
+                        >
+                          Reject
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className='cohort-empty-state'>
+              <strong>All caught up</strong>
+              <span>There are no class representative requests to review.</span>
+            </div>
+          )}
           {reviewProfileRequestMutation.error && (
             <p className='form-error'>
               {reviewProfileRequestMutation.error.message}
@@ -662,7 +755,7 @@ export default function CohortsPage () {
         </section>
       )}
 
-      <section className='content-panel table-panel'>
+      <section className='content-panel table-panel cohort-table-panel'>
         {deleteNotice && <p className='success-message'>{deleteNotice}</p>}
         <div className='filter-row academic-list-filters'>
           <input
@@ -793,7 +886,7 @@ export default function CohortsPage () {
                               setFormError('')
                             }}
                           >
-                            Progression history
+                            View cohort details
                           </button>
                           {canManageCohorts && (
                             <>
@@ -864,12 +957,12 @@ export default function CohortsPage () {
           onClick={() => setSelectedCohort(null)}
         >
           <section
-            className='profile-modal content-panel'
+            className='profile-modal content-panel cohort-progression-modal'
             onClick={event => event.stopPropagation()}
           >
             <div className='page-header'>
               <div>
-                <p className='eyebrow'>Cohort progression</p>
+                <p className='eyebrow'>Cohort details</p>
                 <h2>{selectedCohort.name}</h2>
               </div>
               <button
@@ -880,8 +973,82 @@ export default function CohortsPage () {
                 Close
               </button>
             </div>
-            <section>
-              <h3>Student profile submissions</h3>
+            <section className='cohort-progression-section cohort-members-section'>
+              <div className='cohort-section-heading'>
+                <div>
+                  <p className='eyebrow'>Enrolled students</p>
+                  <h3>Cohort members</h3>
+                </div>
+                <span className='cohort-request-total'>
+                  {cohortMembersLoading ? 'Loading…' : cohortMembers.length}
+                  {cohortMembers.length === 1 ? ' member' : ' members'}
+                </span>
+              </div>
+              {cohortMembersLoading ? (
+                <p>Loading cohort members...</p>
+              ) : cohortMembersError ? (
+                <p className='form-error' role='alert'>
+                  Unable to load cohort members.
+                </p>
+              ) : cohortMembers.length ? (
+                <div className='academic-records-scroll'>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Student</th>
+                        <th>Student number</th>
+                        <th>Contact</th>
+                        <th>Programme</th>
+                        <th>Intake</th>
+                        <th>Year</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {cohortMembers.map(member => (
+                        <tr key={member.id}>
+                          <td>
+                            {member.first_name} {member.last_name}
+                            {Number(member.is_class_representative) === 1 && (
+                              <>
+                                <br />
+                                <span className='cohort-member-role'>
+                                  Class representative
+                                </span>
+                              </>
+                            )}
+                          </td>
+                          <td>{member.student_number || '—'}</td>
+                          <td>
+                            {member.email || '—'}
+                            <br />
+                            {member.phone_number || 'No phone number'}
+                          </td>
+                          <td>{member.programme_name || '—'}</td>
+                          <td>{member.admission_year || '—'}</td>
+                          <td>{member.current_year || '—'}</td>
+                          <td>{member.status || '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className='muted'>
+                  No students are currently assigned to this cohort.
+                </p>
+              )}
+            </section>
+            <section className='cohort-progression-section cohort-request-review'>
+              <div className='cohort-section-heading'>
+                <div>
+                  <p className='eyebrow'>Membership review</p>
+                  <h3>Student profile submissions</h3>
+                </div>
+                <span className='cohort-request-total'>
+                  {membershipRequests.length} pending
+                </span>
+              </div>
               {membershipRequests.length ? (
                 <div className='academic-records-scroll'>
                   <table>
@@ -950,45 +1117,48 @@ export default function CohortsPage () {
               )}
             </section>
             <form
-              className='stack-form academic-mobile-single-column-form'
+              className='stack-form academic-mobile-single-column-form cohort-progression-section'
               onSubmit={handleProgressionSubmit}
             >
-              <h3>Progression history</h3>
-              {progressionsLoading ? (
-                <p>Loading progression history...</p>
-              ) : progressionsError ? (
-                <p className='form-error'>
-                  Unable to load this cohort's progression history.
-                </p>
-              ) : progressions.length ? (
-                <div className='academic-records-scroll'>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Academic year</th>
-                        <th>Semester</th>
-                        <th>Stage</th>
-                        <th>Students</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {progressions.map(item => (
-                        <tr key={item.id}>
-                          <td>{item.academic_year_name}</td>
-                          <td>{item.semester_name}</td>
-                          <td>{item.cohort_type_name}</td>
-                          <td>{item.student_count}</td>
+              <div className='cohort-progression-history'>
+                <h3>Progression history</h3>
+                {progressionsLoading ? (
+                  <p>Loading progression history...</p>
+                ) : progressionsError ? (
+                  <p className='form-error'>
+                    Unable to load this cohort's progression history.
+                  </p>
+                ) : progressions.length ? (
+                  <div className='academic-records-scroll'>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Academic year</th>
+                          <th>Semester</th>
+                          <th>Stage</th>
+                          <th>Students</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p className='muted'>
-                  No progression records are available. Add a verified period
-                  below; legacy records are not automatically inferred.
-                </p>
-              )}
+                      </thead>
+                      <tbody>
+                        {progressions.map(item => (
+                          <tr key={item.id}>
+                            <td>{item.academic_year_name}</td>
+                            <td>{item.semester_name}</td>
+                            <td>{item.cohort_type_name}</td>
+                            <td>{item.student_count}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className='muted'>
+                    No progression records are available. Add a verified
+                    period below; legacy records are not automatically
+                    inferred.
+                  </p>
+                )}
+              </div>
               <h3>Add academic period</h3>
               {canManageCohorts && !selectedCohort.intake_year && (
                 <div className='stack-form'>

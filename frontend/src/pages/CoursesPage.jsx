@@ -140,6 +140,9 @@ export default function CoursesPage () {
     queryKey: ['academic-semester-types'],
     queryFn: async () => toArray(await api.get('/api/academic/semester-types'))
   })
+  const activeSemesterTypes = semesterTypes.filter(
+    type => Number(type.is_active ?? type.isActive) === 1
+  )
 
   const departmentNameMap = Object.fromEntries(
     (departments || []).map(department => [
@@ -435,7 +438,7 @@ export default function CoursesPage () {
                       ? 'Select semester type'
                       : 'Select programme first'}
                   </option>
-                  {semesterTypes.map(type => (
+                  {activeSemesterTypes.map(type => (
                     <option key={type.id} value={type.id}>
                       {type.name} (Semester {type.number})
                     </option>
@@ -935,7 +938,7 @@ export default function CoursesPage () {
                     }
                   >
                     <option value=''>Select semester type</option>
-                    {semesterTypes.map(item => (
+                    {activeSemesterTypes.map(item => (
                       <option key={item.id} value={item.id}>
                         {item.name} (Semester {item.number})
                       </option>

@@ -31,21 +31,27 @@ const examDay = value => {
   return weekdayFromDateOnly(value)
 }
 
+const emptyUnitGroup = () => ({
+  id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  unit_year_level: '',
+  course_id: '',
+  cohort_allocations: {},
+  venue_allocations: [{ venueId: '', allocatedCapacity: '' }]
+})
+
 const emptyExam = {
   academic_year_id: '',
   semester_id: '',
   faculty_ids: [],
-  unit_year_level: '',
   department_ids: [],
   programme_ids: [],
-  course_id: '',
+  sitting_group_id: '',
+  unit_groups: [emptyUnitGroup()],
   exam_date: '',
   start_time: '09:00',
   end_time: '11:00',
   duration_minutes: 120,
-  instructions: '',
-  cohort_allocations: {},
-  venue_allocations: [{ venueId: '', allocatedCapacity: '' }]
+  instructions: ''
 }
 
 export default function ExamsPage () {
@@ -69,6 +75,7 @@ export default function ExamsPage () {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(10)
   const [examToDelete, setExamToDelete] = useState(null)
+  const [selectedRollbackExamIds, setSelectedRollbackExamIds] = useState([])
 
   useEffect(() => {
     const timer = setInterval(() => setToday(todayInputDate()), 60000)
@@ -179,12 +186,12 @@ export default function ExamsPage () {
     semester => String(semester.id) === String(form.semester_id)
   )
 
-  const eligibleUnits = useMemo(() => {
+  const unitsForYear = yearLevel => {
     return courses.filter(unit => {
       const matchesYear =
-        !form.unit_year_level ||
+        !yearLevel ||
         String(unit.year_level ?? unit.yearLevel) ===
-          String(form.unit_year_level)
+          String(yearLevel)
       const matchesSemester =
         !form.semester_id ||
         Number(unit.semester_type_id ?? unit.semesterTypeId) ===
@@ -205,14 +212,7 @@ export default function ExamsPage () {
         matchesYear && matchesSemester && matchesDepartment && matchesProgramme
       )
     })
-  }, [
-    courses,
-    form.department_ids,
-    form.programme_ids,
-    form.semester_id,
-    form.unit_year_level,
-    selectedExamSemester
-  ])
+  }
 
   const eligibleDepartments = useMemo(
     () =>
@@ -243,46 +243,61 @@ export default function ExamsPage () {
     )
   }, [form.academic_year_id, semesters])
 
-  const selectedExamUnit = courses.find(
-    unit => String(unit.id) === String(form.course_id)
-  )
-  const { data: eligibleCohorts = [] } = useQuery({
+  const { data: eligibleCohortsByGroup = {} } = useQuery({
     queryKey: [
       'eligible-cohorts',
       form.academic_year_id,
       form.semester_id,
-      form.course_id,
-      form.programme_ids
+      form.programme_ids,
+      form.unit_groups
     ],
     queryFn: async () => {
-      const studyYear = Number(
-        selectedExamUnit?.year_level ?? selectedExamUnit?.yearLevel
+      const groups = form.unit_groups.filter(
+        group => group.unit_year_level && group.course_id
       )
-      const results = await Promise.all(
-        form.programme_ids.map(async programmeId => {
-          const params = new URLSearchParams({
-            academicYearId: form.academic_year_id,
-            semesterId: form.semester_id,
-            programmeId,
-            studyYear: String(studyYear)
-          })
-          return toArray(
-            await api.get(`/api/academic/eligible-cohorts?${params}`)
+      const resultEntries = await Promise.all(
+        groups.map(async group => {
+          const unit = courses.find(
+            item => String(item.id) === String(group.course_id)
           )
+          const unitProgrammeIds = (
+            unit?.programmeIds ||
+            unit?.programme_ids ||
+            form.programme_ids
+          ).map(String)
+          const programmeIds = form.programme_ids.filter(id =>
+            unitProgrammeIds.includes(String(id))
+          )
+          const results = await Promise.all(
+            programmeIds.map(async programmeId => {
+              const params = new URLSearchParams({
+                academicYearId: form.academic_year_id,
+                semesterId: form.semester_id,
+                programmeId,
+                studyYear: String(group.unit_year_level)
+              })
+              return toArray(
+                await api.get(`/api/academic/eligible-cohorts?${params}`)
+              )
+            })
+          )
+          return [
+            group.id,
+            Array.from(
+              new Map(
+                results.flat().map(cohort => [String(cohort.id), cohort])
+              ).values()
+            )
+          ]
         })
       )
-      return Array.from(
-        new Map(
-          results.flat().map(cohort => [String(cohort.id), cohort])
-        ).values()
-      )
+      return Object.fromEntries(resultEntries)
     },
     enabled: Boolean(
       form.academic_year_id &&
         form.semester_id &&
-        form.course_id &&
         form.programme_ids.length &&
-        selectedExamUnit
+        form.unit_groups.some(group => group.course_id)
     )
   })
 
@@ -338,47 +353,117 @@ export default function ExamsPage () {
     }
   })
 
+  const rollbackExamsMutation = useMutation({
+    mutationFn: ids =>
+      pendingSchedule.rollbackToStaging(
+        ids.map(id => ({ kind: 'exam', id }))
+      ),
+    onSuccess: () => setSelectedRollbackExamIds([])
+  })
+
   const editExam = (exam, pendingDraftId = null, pendingDraftKind = 'exam') => {
     const values = pendingDraftId ? exam.payload : exam
-    const unit = courses.find(
-      item => String(item.id) === String(values.course_id ?? values.courseId)
+    const sourceGroups =
+      Array.isArray(values.unit_groups) && pendingDraftId
+        ? values.unit_groups
+        : [values]
+    const unitGroups = sourceGroups.map((group, index) => {
+      const unit = courses.find(
+        item =>
+          String(item.id) ===
+          String(group.course_id ?? group.courseId ?? values.course_id ?? '')
+      )
+      const cohortRows =
+        group.cohort_allocations ||
+        (index === 0 ? values.cohort_allocations || exam.cohortDetails : [])
+      return {
+        id: group.id || `edit-${index}`,
+        unit_year_level: String(
+          group.study_year ??
+            group.unit_year_level ??
+            unit?.year_level ??
+            unit?.yearLevel ??
+            ''
+        ),
+        course_id: String(
+          group.course_id ?? group.courseId ?? values.course_id ?? ''
+        ),
+        cohort_allocations: Object.fromEntries(
+          cohortRows.map(item => [
+            String(item.cohortId ?? item.cohort_id ?? item.id),
+            String(item.studentCount ?? item.student_count ?? '')
+          ])
+        ),
+        venue_allocations: (
+          group.venue_allocations ||
+          (index === 0
+            ? values.venue_allocations || exam.venueDetails || []
+            : [])
+        ).map(item => ({
+          venueId: String(item.venueId ?? item.venue_id ?? item.id ?? ''),
+          allocatedCapacity: String(
+            item.allocatedCapacity ??
+              item.allocated_capacity ??
+              item.capacity ??
+              ''
+          )
+        }))
+      }
+    })
+    const storedProgrammeIds =
+      values.programme_ids ??
+      values.programmeIds ??
+      (Array.isArray(values.unit_groups)
+        ? values.unit_groups.flatMap(group => group.programme_ids || [])
+        : undefined)
+    const cohortProgrammeIds = unitGroups.flatMap(group =>
+      Object.keys(group.cohort_allocations)
+        .map(cohortId =>
+          cohorts.find(item => String(item.id) === String(cohortId))
+        )
+        .map(cohort => cohort?.programme_id ?? cohort?.programmeId)
+        .filter(value => value !== undefined && value !== null)
     )
-    const departmentIds = (
-      unit?.departmentIds ||
-      unit?.department_ids || [unit?.department_id ?? unit?.departmentId]
-    )
-      .filter(value => value !== undefined && value !== null)
-      .map(String)
-    const programmeIds = (unit?.programmeIds || unit?.programme_ids || []).map(
-      String
-    )
+    const selectedUnits = unitGroups
+      .map(group =>
+        courses.find(item => String(item.id) === String(group.course_id))
+      )
+      .filter(Boolean)
+    const departmentIds = [
+      ...new Set(
+        selectedUnits
+          .flatMap(unit =>
+            unit.departmentIds ||
+            unit.department_ids || [unit.department_id ?? unit.departmentId]
+          )
+          .filter(value => value !== undefined && value !== null)
+          .map(String)
+      )
+    ]
+    const programmeIds = storedProgrammeIds
+      ? [...new Set(storedProgrammeIds.map(String))]
+      : cohortProgrammeIds.length
+        ? [...new Set(cohortProgrammeIds.map(String))]
+        : [
+            ...new Set(
+              selectedUnits
+                .flatMap(unit => unit.programmeIds || unit.programme_ids || [])
+                .map(String)
+            )
+          ]
     const facultyIds = departments
       .filter(item => departmentIds.includes(String(item.id)))
       .map(item => String(item.faculty_id ?? item.facultyId))
-    const cohortRows = values.cohort_allocations || exam.cohortDetails || []
-    const cohortAllocations = Object.fromEntries(
-      cohortRows.map(item => [
-        String(item.cohortId ?? item.cohort_id ?? item.id),
-        String(item.studentCount ?? item.student_count ?? '')
-      ])
-    )
-    const venueRows = values.venue_allocations || exam.venueDetails || []
-    const venueAllocations = venueRows.map(item => ({
-      venueId: String(item.venueId ?? item.venue_id ?? item.id),
-      allocatedCapacity: String(
-        item.allocatedCapacity ?? item.allocated_capacity ?? item.capacity ?? ''
-      )
-    }))
     setForm({
       academic_year_id: String(
         values.academic_year_id ?? values.academicYearId ?? ''
       ),
       semester_id: String(values.semester_id ?? values.semesterId ?? ''),
       faculty_ids: [...new Set(facultyIds)],
-      unit_year_level: String(unit?.year_level ?? unit?.yearLevel ?? ''),
       department_ids: departmentIds,
       programme_ids: programmeIds,
-      course_id: String(values.course_id ?? values.courseId ?? ''),
+      sitting_group_id: values.sitting_group_id ?? values.sittingGroupId ?? '',
+      unit_groups: unitGroups.length ? unitGroups : [emptyUnitGroup()],
       exam_date: String(values.exam_date ?? values.examDate ?? '').slice(0, 10),
       start_time: String(
         values.start_time ?? values.startTime ?? '09:00'
@@ -389,11 +474,7 @@ export default function ExamsPage () {
       ),
       duration_minutes:
         values.duration_minutes ?? values.durationMinutes ?? 120,
-      instructions: values.instructions || '',
-      cohort_allocations: cohortAllocations,
-      venue_allocations: venueAllocations.length
-        ? venueAllocations
-        : [{ venueId: '', allocatedCapacity: '' }]
+      instructions: values.instructions || ''
     })
     setEditingExam(
       pendingDraftId
@@ -410,32 +491,58 @@ export default function ExamsPage () {
 
   const stagedExamDescription = draft => {
     const payload = draft.payload || {}
-    const unit = courses.find(
-      item =>
-        String(item.id) === String(payload.course_id ?? payload.courseId ?? '')
+    const groups = Array.isArray(payload.unit_groups)
+      ? payload.unit_groups
+      : [payload]
+    const groupLabels = groups.map(group => {
+      const unit = courses.find(
+        item =>
+          String(item.id) ===
+          String(group.course_id ?? group.courseId ?? '')
+      )
+      const unitLabel = unit
+        ? `${unit.code ? `${unit.code} · ` : ''}${unit.name || ''}`.trim()
+        : `Unit ${group.course_id ?? group.courseId ?? '?'}`
+      const studyYear =
+        group.study_year ??
+        group.studyYear ??
+        group.unit_year_level ??
+        unit?.year_level ??
+        unit?.yearLevel
+      const cohortNames = (group.cohort_allocations || [])
+        .map(allocation => {
+          const id = allocation.cohortId ?? allocation.cohort_id
+          return (
+            cohorts.find(item => String(item.id) === String(id))?.name ||
+            allocation.cohortName ||
+            `Cohort ${id}`
+          )
+        })
+        .join(', ')
+      return `Year ${studyYear ?? '?'} · ${unitLabel}: ${
+        cohortNames || 'No cohorts'
+      }`
+    })
+    const venueAllocations = groups.flatMap(
+      group => group.venue_allocations || []
     )
-    const cohortNames = (payload.cohort_allocations || [])
-      .map(allocation => {
-        const id = allocation.cohortId ?? allocation.cohort_id
-        return (
-          cohorts.find(item => String(item.id) === String(id))?.name ||
-          allocation.cohortName ||
-          `Cohort ${id}`
-        )
-      })
-      .join(', ')
-    const venueNames = (payload.venue_allocations || [])
+    const venueNames = (
+      venueAllocations.length
+        ? venueAllocations
+        : payload.venue_allocations || payload.venue_names || []
+    )
       .map(allocation => {
         const id = allocation.venueId ?? allocation.venue_id
         const venue = venues.find(item => String(item.id) === String(id))
         return venue
           ? `${venue.code ? `${venue.code} · ` : ''}${venue.name}`
-          : `Venue ${id}`
+          : allocation.name ||
+              allocation.venueName ||
+              allocation.venue_name ||
+              (id ? `Venue ${id}` : '')
       })
-      .join(', ')
-    const unitLabel = unit
-      ? `${unit.code ? `${unit.code} · ` : ''}${unit.name || ''}`.trim()
-      : `Unit ${payload.course_id ?? payload.courseId ?? '?'}`
+      .filter(Boolean)
+    const uniqueVenueNames = [...new Set(venueNames)]
     const yearName = academicYears.find(
       item =>
         String(item.id) ===
@@ -449,9 +556,9 @@ export default function ExamsPage () {
     const date = payload.exam_date ?? payload.examDate
     return `${
       payload.exam_id ? `Exam #${payload.exam_id} changes · ` : ''
-    }${unitLabel} · ${yearName || 'Year'} / ${semesterName || 'Semester'} · ${
-      cohortNames || 'No cohorts'
-    } · ${venueNames || 'No venues'} · ${examDay(date)}, ${formatExamDate(
+    }${groupLabels.join(' | ')} · ${yearName || 'Year'} / ${
+      semesterName || 'Semester'
+    } · ${uniqueVenueNames.join(', ') || 'No venues'} · ${examDay(date)}, ${formatExamDate(
       date
     )} (${payload.start_time ?? payload.startTime}–${
       payload.end_time ?? payload.endTime
@@ -481,28 +588,12 @@ export default function ExamsPage () {
           )
         )
       })
-      const selectedUnit = courses.find(
-        item => String(item.id) === String(current.course_id)
-      )
-      const selectedUnitProgrammes = (
-        selectedUnit?.programmeIds ||
-        selectedUnit?.programme_ids ||
-        []
-      ).map(String)
       return {
         ...current,
         faculty_ids,
         department_ids,
         programme_ids,
-        cohort_allocations: {},
-        course_id: selectedUnitProgrammes.some(id => programme_ids.includes(id))
-          ? current.course_id
-          : '',
-        unit_year_level: selectedUnitProgrammes.some(id =>
-          programme_ids.includes(id)
-        )
-          ? current.unit_year_level
-          : ''
+        unit_groups: [emptyUnitGroup()]
       }
     })
   }
@@ -521,27 +612,11 @@ export default function ExamsPage () {
           )
         )
       })
-      const selectedUnit = courses.find(
-        item => String(item.id) === String(current.course_id)
-      )
-      const selectedUnitProgrammes = (
-        selectedUnit?.programmeIds ||
-        selectedUnit?.programme_ids ||
-        []
-      ).map(String)
       return {
         ...current,
         department_ids,
         programme_ids,
-        cohort_allocations: {},
-        course_id: selectedUnitProgrammes.some(id => programme_ids.includes(id))
-          ? current.course_id
-          : '',
-        unit_year_level: selectedUnitProgrammes.some(id =>
-          programme_ids.includes(id)
-        )
-          ? current.unit_year_level
-          : ''
+        unit_groups: [emptyUnitGroup()]
       }
     })
   }
@@ -551,23 +626,10 @@ export default function ExamsPage () {
       const programme_ids = checked
         ? [...new Set([...current.programme_ids, String(programmeId)])]
         : current.programme_ids.filter(id => id !== String(programmeId))
-      const selectedUnit = courses.find(
-        item => String(item.id) === String(current.course_id)
-      )
-      const selectedUnitProgrammes = (
-        selectedUnit?.programmeIds ||
-        selectedUnit?.programme_ids ||
-        []
-      ).map(String)
-      const unitStillAvailable = selectedUnitProgrammes.some(id =>
-        programme_ids.includes(id)
-      )
       return {
         ...current,
         programme_ids,
-        cohort_allocations: {},
-        course_id: unitStillAvailable ? current.course_id : '',
-        unit_year_level: unitStillAvailable ? current.unit_year_level : ''
+        unit_groups: [emptyUnitGroup()]
       }
     })
   }
@@ -622,15 +684,30 @@ export default function ExamsPage () {
     if (
       !form.academic_year_id ||
       !form.semester_id ||
-      !form.course_id ||
+      !form.unit_groups.length ||
       !form.faculty_ids.length ||
       !form.department_ids.length ||
       !form.programme_ids.length ||
       !form.exam_date
     ) {
       setFormError(
-        'Academic year, semester, faculty, department, programme, unit year, unit, and date are required.'
+        'Academic year, semester, faculty, department, programme, unit groups, and date are required.'
       )
+      return
+    }
+    if (
+      form.unit_groups.some(
+        group => !group.unit_year_level || !group.course_id
+      )
+    ) {
+      setFormError('Choose a unit year and unit for every group.')
+      return
+    }
+    if (
+      new Set(form.unit_groups.map(group => String(group.course_id))).size !==
+      form.unit_groups.length
+    ) {
+      setFormError('Each unit can only be added once to an exam sitting.')
       return
     }
 
@@ -652,132 +729,203 @@ export default function ExamsPage () {
       }
     }
 
-    const cohortAllocations = Object.keys(form.cohort_allocations)
-      .map(cohortId => {
-        const cohort = eligibleCohorts.find(
-          item => String(item.id) === String(cohortId)
+    const unitGroups = form.unit_groups.map(group => {
+      const availableCohorts = eligibleCohortsByGroup[group.id] || []
+      const cohortAllocations = Object.keys(group.cohort_allocations)
+        .map(cohortId => {
+          const cohort = availableCohorts.find(
+            item => String(item.id) === String(cohortId)
+          )
+          return {
+            cohortId: Number(cohortId),
+            studentCount: Number(
+              cohort?.student_count ?? cohort?.studentCount ?? 0
+            ),
+            cohortName: cohort?.name || `Cohort ${cohortId}`
+          }
+        })
+        .filter(allocation => allocation.studentCount > 0)
+      const unit = courses.find(
+        item => String(item.id) === String(group.course_id)
+      )
+      const unitProgrammeIds = (
+        unit?.programmeIds ||
+        unit?.programme_ids ||
+        form.programme_ids
+      ).map(String)
+      return {
+        course_id: Number(group.course_id),
+        study_year: Number(group.unit_year_level),
+        programme_ids: form.programme_ids
+          .filter(id => unitProgrammeIds.includes(String(id)))
+          .map(Number),
+        unit_name: unit?.name || `Unit ${group.course_id}`,
+        cohort_allocations: cohortAllocations
+      }
+    })
+    if (unitGroups.some(group => !group.cohort_allocations.length)) {
+      setFormError('Select at least one cohort with students for each unit.')
+      return
+    }
+    const allCohortIds = unitGroups.flatMap(group =>
+      group.cohort_allocations.map(allocation => allocation.cohortId)
+    )
+    if (new Set(allCohortIds).size !== allCohortIds.length) {
+      setFormError('A cohort can only be assigned to one unit in a sitting.')
+      return
+    }
+
+    const selectedVenueStudentCounts = new Map()
+    for (const group of unitGroups) {
+      let groupStudents = group.cohort_allocations.reduce(
+        (total, allocation) => total + allocation.studentCount,
+        0
+      )
+      const selectedGroup = form.unit_groups.find(
+        item => item.course_id === String(group.course_id)
+      )
+      if (
+        selectedGroup.venue_allocations.some(
+          item => !item.venueId && item.allocatedCapacity
         )
-        return {
-          cohortId,
-          studentCount: Number(
-            cohort?.student_count ?? cohort?.studentCount ?? 0
-          ),
-          cohortName: cohort?.name || `Cohort ${cohortId}`
+      ) {
+        setFormError('Choose a venue for each venue allocation.')
+        return
+      }
+      const selectedVenueAllocations = selectedGroup.venue_allocations
+        .filter(item => item.venueId)
+        .map(item => {
+          const venue = venues.find(
+            option => String(option.id) === String(item.venueId)
+          )
+          return {
+            venueId: Number(item.venueId),
+            allocatedCapacity: Number(
+              item.allocatedCapacity || venue?.capacity || 0
+            )
+          }
+        })
+      if (!selectedVenueAllocations.length) {
+        setFormError(
+          `Select at least one venue for ${group.unit_name || 'each unit group'}.`
+        )
+        return
+      }
+      if (
+        new Set(
+          selectedVenueAllocations.map(item => String(item.venueId))
+        ).size !== selectedVenueAllocations.length
+      ) {
+        setFormError('Each venue can only be added once within a unit group.')
+        return
+      }
+      if (
+        selectedVenueAllocations.some(allocation => {
+          const venue = venues.find(
+            item => String(item.id) === String(allocation.venueId)
+          )
+          return (
+            allocation.allocatedCapacity < 1 ||
+            allocation.allocatedCapacity > Number(venue?.capacity || 0)
+          )
+        })
+      ) {
+        setFormError(
+          'A venue allocation is invalid or exceeds that venue’s capacity.'
+        )
+        return
+      }
+      group.venue_allocations = []
+      for (const venueAllocation of selectedVenueAllocations) {
+        const assignedStudents = Math.min(
+          groupStudents,
+          venueAllocation.allocatedCapacity
+        )
+        if (assignedStudents > 0) {
+          group.venue_allocations.push({
+            ...venueAllocation,
+            studentCount: assignedStudents
+          })
+          const key = String(venueAllocation.venueId)
+          selectedVenueStudentCounts.set(
+            key,
+            (selectedVenueStudentCounts.get(key) || 0) + assignedStudents
+          )
+          groupStudents -= assignedStudents
         }
-      })
-      .filter(allocation => allocation.studentCount > 0)
-
-    if (!cohortAllocations.length) {
-      setFormError('Select at least one cohort with students.')
-      return
+        if (!groupStudents) break
+      }
+      if (groupStudents > 0) {
+        setFormError(
+          'The selected venue allocations do not have enough combined capacity for every unit group.'
+        )
+        return
+      }
     }
-    if (
-      new Set(cohortAllocations.map(item => String(item.cohortId))).size !==
-      cohortAllocations.length
-    ) {
-      setFormError('Each cohort can only be added once to an exam.')
-      return
-    }
-
-    const totalStudents = cohortAllocations.reduce(
-      (total, allocation) => total + Number(allocation.studentCount),
-      0
-    )
-    const incompleteVenue = form.venue_allocations.find(
-      allocation =>
-        Number(allocation.allocatedCapacity) > 0 && !allocation.venueId
-    )
-    if (incompleteVenue) {
-      setFormError('Select a venue for every allocation with a capacity.')
-      return
+    for (const [venueId, studentCount] of selectedVenueStudentCounts) {
+      const venue = venues.find(item => String(item.id) === venueId)
+      if (studentCount > Number(venue?.capacity || 0)) {
+        setFormError(
+          `${venue?.name || 'Selected venue'} is assigned ${studentCount} students across unit groups but has capacity for ${venue?.capacity || 0}.`
+        )
+        return
+      }
     }
 
-    const venueAllocations = form.venue_allocations
-      .map(allocation => ({ ...allocation }))
-      .filter(
-        allocation =>
-          Number(allocation.allocatedCapacity) > 0 && allocation.venueId
-      )
-      .map(allocation => ({
-        ...allocation,
-        studentCount: Number(allocation.allocatedCapacity)
-      }))
-
-    if (!venueAllocations.length) {
-      setFormError(
-        'Select at least one venue and enter its allocation capacity.'
-      )
-      return
-    }
-    if (
-      new Set(venueAllocations.map(item => String(item.venueId))).size !==
-      venueAllocations.length
-    ) {
-      setFormError('Each venue can only be added once to an exam.')
-      return
-    }
-
-    const allocatedStudents = venueAllocations.reduce(
-      (total, allocation) => total + allocation.studentCount,
-      0
-    )
-    if (allocatedStudents < totalStudents) {
-      setFormError(
-        `Venue allocations cover ${allocatedStudents} students, but the selected cohorts contain ${totalStudents}.`
-      )
-      return
-    }
-
-    const overCapacityVenue = venueAllocations.find(allocation => {
+    const firstGroup = unitGroups[0]
+    const commonVenueNames = [
+      ...new Map(
+        unitGroups
+          .flatMap(group => group.venue_allocations)
+          .map(allocation => [String(allocation.venueId), allocation])
+      ).values()
+    ].map(allocation => {
       const venue = venues.find(
         item => String(item.id) === String(allocation.venueId)
       )
-      return allocation.allocatedCapacity > Number(venue?.capacity || 0)
+      return {
+        id: Number(allocation.venueId),
+        name: venue?.name || venue?.venue_name || `Venue ${allocation.venueId}`
+      }
     })
-    if (overCapacityVenue) {
-      const venue = venues.find(
-        item => String(item.id) === String(overCapacityVenue.venueId)
-      )
-      setFormError(
-        `${venue?.name || 'Selected venue'} cannot be allocated more than ${
-          venue?.capacity || 0
-        } students.`
-      )
-      return
-    }
-
     const payload = {
       academic_year_id: Number(form.academic_year_id),
       semester_id: Number(form.semester_id),
-      course_id: Number(form.course_id),
+      course_id: firstGroup.course_id,
       programme_ids: form.programme_ids.map(Number),
-      study_year: Number(form.unit_year_level),
-      unit_name:
-        courses.find(item => String(item.id) === String(form.course_id))
-          ?.name || `Unit ${form.course_id}`,
-      cohort_names: cohortAllocations.map(allocation => ({
-        id: Number(allocation.cohortId),
-        name: allocation.cohortName
-      })),
-      venue_names: venueAllocations.map(allocation => {
-        const venue = venues.find(
-          item => String(item.id) === String(allocation.venueId)
-        )
-        return {
-          id: Number(allocation.venueId),
-          name:
-            venue?.name || venue?.venue_name || `Venue ${allocation.venueId}`
-        }
-      }),
+      study_year: firstGroup.study_year,
+      unit_name: firstGroup.unit_name,
+      unit_groups: unitGroups,
+      sitting_group_id:
+        form.sitting_group_id ||
+        (unitGroups.length > 1
+          ? globalThis.crypto?.randomUUID?.() ||
+            `sitting-${Date.now()}-${Math.random().toString(36).slice(2)}`
+          : null),
+      cohort_names: unitGroups.flatMap(group =>
+        group.cohort_allocations.map(allocation => ({
+          id: Number(allocation.cohortId),
+          name: allocation.cohortName
+        }))
+      ),
+      venue_names: commonVenueNames,
       exam_date: form.exam_date,
       start_time: form.start_time,
       end_time: form.end_time,
       duration_minutes: Number(form.duration_minutes) || 120,
-      instructions: form.instructions,
-      cohort_allocations: cohortAllocations,
-      venue_allocations: venueAllocations
+      instructions: form.instructions
     }
 
+    if (
+      editingExam &&
+      (!editingExam.pendingDraftId ||
+        editingExam.pendingDraftKind === 'exam_update')
+    ) {
+      const editedGroup = unitGroups[0]
+      payload.cohort_allocations = editedGroup.cohort_allocations
+      payload.venue_allocations = editedGroup.venue_allocations
+      payload.course_id = editedGroup.course_id
+    }
     if (editingExam?.pendingDraftId) {
       updateStagedExamMutation.mutate({
         id: editingExam.pendingDraftId,
@@ -957,9 +1105,8 @@ export default function ExamsPage () {
                       faculty_ids: [],
                       department_ids: [],
                       programme_ids: [],
-                      unit_year_level: '',
-                      course_id: '',
-                      cohort_allocations: {}
+                      unit_groups: [emptyUnitGroup()],
+                      sitting_group_id: ''
                     }))
                   }
                 >
@@ -992,9 +1139,13 @@ export default function ExamsPage () {
                     setForm(current => ({
                       ...current,
                       semester_id: event.target.value,
-                      course_id: '',
-                      unit_year_level: '',
-                      cohort_allocations: {}
+                      unit_groups: current.unit_groups.map(group => ({
+                        ...group,
+                        unit_year_level: '',
+                        course_id: '',
+                        cohort_allocations: {}
+                      })),
+                      sitting_group_id: ''
                     }))
                   }
                 >
@@ -1086,277 +1237,385 @@ export default function ExamsPage () {
                 </div>
               </fieldset>
 
-              <label className='selection-container'>
-                Unit year
-                <select
-                  value={form.unit_year_level}
-                  disabled={!form.semester_id}
-                  onChange={event =>
-                    setForm(current => ({
-                      ...current,
-                      unit_year_level: event.target.value,
-                      course_id: '',
-                      cohort_allocations: {}
-                    }))
-                  }
-                >
-                  <option value=''>
-                    {form.semester_id ? 'Select year' : 'Select semester first'}
-                  </option>
-                  {[1, 2, 3, 4, 5, 6].map(year => (
-                    <option key={year} value={year}>
-                      Year {year}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className='selection-container'>
-                Unit
-                <select
-                  value={form.course_id}
-                  disabled={
-                    !form.unit_year_level ||
-                    !form.semester_id ||
-                    !form.department_ids.length ||
-                    !form.programme_ids.length
-                  }
-                  onChange={event =>
-                    setForm(current => ({
-                      ...current,
-                      course_id: event.target.value,
-                      cohort_allocations: {}
-                    }))
-                  }
-                >
-                  <option value=''>
-                    {form.unit_year_level &&
-                    form.semester_id &&
-                    form.department_ids.length &&
-                    form.programme_ids.length
-                      ? 'Select unit'
-                      : 'Complete filters first'}
-                  </option>
-                  {!eligibleUnits.length && (
-                    <option disabled>
-                      No units match this year and semester
-                    </option>
-                  )}
-                  {eligibleUnits.map(unit => (
-                    <option
-                      key={unit.id ?? unit.code}
-                      value={unit.id ?? unit.code}
-                    >
-                      {unit.code ? `${unit.code} - ` : ''}
-                      {unit.name || 'Unnamed unit'}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label>
-                Exam date
-                <input
-                  type='date'
-                  value={form.exam_date}
-                  min={todayInputDate()}
-                  onChange={event =>
-                    setForm(current => ({
-                      ...current,
-                      exam_date: event.target.value
-                    }))
-                  }
-                />
-              </label>
-
-              <label>
-                Start time
-                <input
-                  type='time'
-                  value={form.start_time}
-                  min={
-                    form.exam_date === todayInputDate()
-                      ? new Date().toTimeString().slice(0, 5)
-                      : undefined
-                  }
-                  onChange={event =>
-                    setForm(current => ({
-                      ...current,
-                      start_time: event.target.value
-                    }))
-                  }
-                />
-              </label>
-
-              <label>
-                End time
-                <input
-                  type='time'
-                  value={form.end_time}
-                  onChange={event =>
-                    setForm(current => ({
-                      ...current,
-                      end_time: event.target.value
-                    }))
-                  }
-                />
-              </label>
-
-              <label>
-                Duration (minutes)
-                <input
-                  type='number'
-                  value={form.duration_minutes}
-                  onChange={event =>
-                    setForm(current => ({
-                      ...current,
-                      duration_minutes: event.target.value
-                    }))
-                  }
-                />
-              </label>
-
               <fieldset className='full-width checkbox-fieldset'>
-                <legend>Venues and allocation capacity</legend>
-                <div className='allocation-list'>
-                  {form.venue_allocations.map((allocation, index) => (
-                    <div
-                      key={`venue-allocation-${index}`}
-                      className='allocation-row'
-                    >
-                      <ScrollableSelect
-                        value={allocation.venueId}
-                        required
-                        options={(venues || []).map(venue => ({
-                          value: venue.id ?? venue.name,
-                          label: `${venue.code ? `${venue.code} · ` : ''}${
-                            venue.name || venue.venue_name
-                          } (${venue.capacity || 0} seats)`,
-                          searchText: venue.name || venue.venue_name
-                        }))}
-                        placeholder='Select venue'
-                        ariaLabel='Select exam venue'
-                        onChange={value =>
-                          setForm(current => ({
-                            ...current,
-                            venue_allocations: current.venue_allocations.map(
-                              (item, itemIndex) =>
-                                itemIndex === index
-                                  ? { ...item, venueId: value }
-                                  : item
-                            )
-                          }))
-                        }
-                      />
-                      <input
-                        type='number'
-                        min='1'
-                        max={
-                          venues.find(
-                            venue =>
-                              String(venue.id) === String(allocation.venueId)
-                          )?.capacity || undefined
-                        }
-                        placeholder='Allocation'
-                        value={allocation.allocatedCapacity}
-                        onChange={event =>
-                          setForm(current => ({
-                            ...current,
-                            venue_allocations: current.venue_allocations.map(
-                              (item, itemIndex) =>
-                                itemIndex === index
-                                  ? {
-                                      ...item,
-                                      allocatedCapacity: event.target.value
-                                    }
-                                  : item
-                            )
-                          }))
-                        }
-                      />
-                      {form.venue_allocations.length > 1 && (
-                        <button
-                          type='button'
-                          className='table-action danger'
-                          onClick={() =>
-                            setForm(current => ({
-                              ...current,
-                              venue_allocations:
-                                current.venue_allocations.filter(
-                                  (_, itemIndex) => itemIndex !== index
-                                )
-                            }))
-                          }
-                        >
-                          Remove
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  <button
-                    type='button'
-                    className='secondary-button'
-                    onClick={() =>
-                      setForm(current => ({
-                        ...current,
-                        venue_allocations: [
-                          ...current.venue_allocations,
-                          { venueId: '', allocatedCapacity: '' }
-                        ]
-                      }))
-                    }
-                  >
-                    Add another venue
-                  </button>
-                  {!venues.length && <small>No venues available</small>}
+                <legend>Exam schedule</legend>
+                <div className='form-grid'>
+                  <label>
+                    Exam date
+                    <input
+                      type='date'
+                      value={form.exam_date}
+                      min={todayInputDate()}
+                      onChange={event =>
+                        setForm(current => ({
+                          ...current,
+                          exam_date: event.target.value
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <label>
+                    Start time
+                    <input
+                      type='time'
+                      value={form.start_time}
+                      min={
+                        form.exam_date === todayInputDate()
+                          ? new Date().toTimeString().slice(0, 5)
+                          : undefined
+                      }
+                      onChange={event =>
+                        setForm(current => ({
+                          ...current,
+                          start_time: event.target.value
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <label>
+                    End time
+                    <input
+                      type='time'
+                      value={form.end_time}
+                      onChange={event =>
+                        setForm(current => ({
+                          ...current,
+                          end_time: event.target.value
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <label>
+                    Duration (minutes)
+                    <input
+                      type='number'
+                      value={form.duration_minutes}
+                      onChange={event =>
+                        setForm(current => ({
+                          ...current,
+                          duration_minutes: event.target.value
+                        }))
+                      }
+                    />
+                  </label>
                 </div>
               </fieldset>
 
               <fieldset className='full-width checkbox-fieldset'>
-                <legend>Cohorts</legend>
-                <div className='checkbox-list'>
-                  {eligibleCohorts.map(cohort => {
-                    const cohortId = String(cohort.id ?? cohort.name)
-                    const selected = Object.prototype.hasOwnProperty.call(
-                      form.cohort_allocations,
-                      cohortId
-                    )
+                <legend>Units and cohort groups</legend>
+                <p className='muted'>
+                  Add one group for each unit. Assign each cohort to the unit
+                  it will sit, even when groups are from different years. Set
+                  the exam schedule above before assigning venues to each
+                  group.
+                </p>
+                <div className='stack-form'>
+                  {form.unit_groups.map((group, groupIndex) => {
+                    const groupCohorts =
+                      eligibleCohortsByGroup[group.id] || []
                     return (
-                      <div
-                        key={cohortId}
-                        className='checkbox-option cohort-option'
+                      <fieldset
+                        key={group.id}
+                        className='checkbox-fieldset selection-container'
                       >
-                        <label>
-                          <input
-                            type='checkbox'
-                            checked={selected}
-                            onChange={event =>
-                              setForm(current => {
-                                const next = { ...current.cohort_allocations }
-                                if (event.target.checked) next[cohortId] = ''
-                                else delete next[cohortId]
-                                return { ...current, cohort_allocations: next }
-                              })
+                        <legend>Unit group {groupIndex + 1}</legend>
+                        <div className='form-grid'>
+                          <label>
+                            Unit year
+                            <select
+                              value={group.unit_year_level}
+                              disabled={!form.semester_id}
+                              onChange={event =>
+                                setForm(current => ({
+                                  ...current,
+                                  unit_groups: current.unit_groups.map(item =>
+                                    item.id === group.id
+                                      ? {
+                                          ...item,
+                                          unit_year_level: event.target.value,
+                                          course_id: '',
+                                          cohort_allocations: {}
+                                        }
+                                      : item
+                                  )
+                                }))
+                              }
+                            >
+                              <option value=''>
+                                {form.semester_id
+                                  ? 'Select year'
+                                  : 'Select semester first'}
+                              </option>
+                              {[1, 2, 3, 4, 5, 6].map(year => (
+                                <option key={year} value={year}>
+                                  Year {year}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            Unit
+                            <select
+                              value={group.course_id}
+                              disabled={
+                                !group.unit_year_level ||
+                                !form.semester_id ||
+                                !form.department_ids.length ||
+                                !form.programme_ids.length
+                              }
+                              onChange={event =>
+                                setForm(current => ({
+                                  ...current,
+                                  unit_groups: current.unit_groups.map(item =>
+                                    item.id === group.id
+                                      ? {
+                                          ...item,
+                                          course_id: event.target.value,
+                                          cohort_allocations: {}
+                                        }
+                                      : item
+                                  )
+                                }))
+                              }
+                            >
+                              <option value=''>
+                                {group.unit_year_level &&
+                                form.semester_id &&
+                                form.department_ids.length &&
+                                form.programme_ids.length
+                                  ? 'Select unit'
+                                  : 'Complete filters first'}
+                              </option>
+                              {unitsForYear(group.unit_year_level).map(unit => (
+                                <option key={unit.id} value={unit.id}>
+                                  {unit.code ? `${unit.code} - ` : ''}
+                                  {unit.name || 'Unnamed unit'}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                        <div className='checkbox-list'>
+                          {groupCohorts.map(cohort => {
+                            const cohortId = String(cohort.id)
+                            const selected =
+                              Object.prototype.hasOwnProperty.call(
+                                group.cohort_allocations,
+                                cohortId
+                              )
+                            return (
+                              <label
+                                key={cohortId}
+                                className='checkbox-option cohort-option'
+                              >
+                                <input
+                                  type='checkbox'
+                                  checked={selected}
+                                  onChange={event =>
+                                    setForm(current => ({
+                                      ...current,
+                                      unit_groups: current.unit_groups.map(
+                                        item => {
+                                          if (item.id !== group.id) return item
+                                          const cohort_allocations = {
+                                            ...item.cohort_allocations
+                                          }
+                                          if (event.target.checked) {
+                                            cohort_allocations[cohortId] = ''
+                                          } else {
+                                            delete cohort_allocations[cohortId]
+                                          }
+                                          return {
+                                            ...item,
+                                            cohort_allocations
+                                          }
+                                        }
+                                      )
+                                    }))
+                                  }
+                                />
+                                <span>
+                                  {cohort.name}
+                                  {cohort.cohort_type_name
+                                    ? ` · ${cohort.cohort_type_name}`
+                                    : ''}{' '}
+                                  (
+                                  {cohort.student_count ??
+                                    cohort.studentCount ??
+                                    0}{' '}
+                                  students)
+                                </span>
+                              </label>
+                            )
+                          })}
+                          {group.course_id && !groupCohorts.length && (
+                            <small>
+                              No eligible cohorts are available for this unit
+                              year and academic period.
+                            </small>
+                          )}
+                          {!group.course_id && (
+                            <small>Select a unit to load eligible cohorts.</small>
+                          )}
+                        </div>
+                        <fieldset className='checkbox-fieldset'>
+                          <legend>Venue assignment for this unit</legend>
+                          <p className='muted'>
+                            Assign this group to a room. To share a room, select
+                            the same venue for each group; capacity is checked
+                            across all groups using it.
+                          </p>
+                          <div className='allocation-list'>
+                            {group.venue_allocations.map(
+                              (allocation, index) => (
+                                <div
+                                  key={`${group.id}-venue-${index}`}
+                                  className='allocation-row'
+                                >
+                                  <ScrollableSelect
+                                    value={allocation.venueId}
+                                    required
+                                    options={venues.map(venue => ({
+                                      value: venue.id,
+                                      label: `${venue.code ? `${venue.code} · ` : ''}${
+                                        venue.name || venue.venue_name
+                                      } (${venue.capacity || 0} seats)`,
+                                      searchText:
+                                        venue.name || venue.venue_name
+                                    }))}
+                                    placeholder='Select venue'
+                                    ariaLabel={`Select venue for unit group ${groupIndex + 1}`}
+                                    onChange={value =>
+                                      setForm(current => ({
+                                        ...current,
+                                        unit_groups: current.unit_groups.map(
+                                          item =>
+                                            item.id === group.id
+                                              ? {
+                                                  ...item,
+                                                  venue_allocations:
+                                                    item.venue_allocations.map(
+                                                      (venueItem, venueIndex) =>
+                                                        venueIndex === index
+                                                          ? {
+                                                              ...venueItem,
+                                                              venueId: value,
+                                                              allocatedCapacity:
+                                                                venues.find(
+                                                                  venue =>
+                                                                    String(
+                                                                      venue.id
+                                                                    ) ===
+                                                                    String(
+                                                                      value
+                                                                    )
+                                                                )?.capacity ||
+                                                                ''
+                                                            }
+                                                          : venueItem
+                                                    )
+                                                }
+                                              : item
+                                        )
+                                      }))
+                                    }
+                                  />
+                                  {group.venue_allocations.length > 1 && (
+                                    <button
+                                      type='button'
+                                      className='table-action danger'
+                                      onClick={() =>
+                                        setForm(current => ({
+                                          ...current,
+                                          unit_groups: current.unit_groups.map(
+                                            item =>
+                                              item.id === group.id
+                                                ? {
+                                                    ...item,
+                                                    venue_allocations:
+                                                      item.venue_allocations.filter(
+                                                        (_, venueIndex) =>
+                                                          venueIndex !== index
+                                                      )
+                                                  }
+                                                : item
+                                          )
+                                        }))
+                                      }
+                                    >
+                                      Remove
+                                    </button>
+                                  )}
+                                </div>
+                              )
+                            )}
+                            <button
+                              type='button'
+                              className='secondary-button'
+                              onClick={() =>
+                                setForm(current => ({
+                                  ...current,
+                                  unit_groups: current.unit_groups.map(item =>
+                                    item.id === group.id
+                                      ? {
+                                          ...item,
+                                          venue_allocations: [
+                                            ...item.venue_allocations,
+                                            {
+                                              venueId: '',
+                                              allocatedCapacity: ''
+                                            }
+                                          ]
+                                        }
+                                      : item
+                                  )
+                                }))
+                              }
+                            >
+                              Add venue for this group
+                            </button>
+                          </div>
+                        </fieldset>
+                        {form.unit_groups.length > 1 && (
+                          <button
+                            type='button'
+                            className='table-action danger'
+                            onClick={() =>
+                              setForm(current => ({
+                                ...current,
+                                unit_groups: current.unit_groups.filter(
+                                  item => item.id !== group.id
+                                )
+                              }))
                             }
-                          />
-                          <span>
-                            {cohort.name}
-                            {cohort.cohort_type_name
-                              ? ` · ${cohort.cohort_type_name}`
-                              : ''}{' '}
-                            (
-                            {cohort.student_count ?? cohort.studentCount ?? 0}{' '}
-                            students)
-                          </span>
-                        </label>
-                      </div>
+                          >
+                            Remove unit group
+                          </button>
+                        )}
+                      </fieldset>
                     )
                   })}
-                  {!eligibleCohorts.length && (
-                    <small>
-                      Select an academic year and department with available
-                      cohorts.
-                    </small>
+                  {(!editingExam ||
+                    (editingExam.pendingDraftId &&
+                      editingExam.pendingDraftKind === 'exam')) && (
+                    <button
+                      type='button'
+                      className='secondary-button'
+                      onClick={() =>
+                        setForm(current => ({
+                          ...current,
+                          unit_groups: [
+                            ...current.unit_groups,
+                            emptyUnitGroup()
+                          ]
+                        }))
+                      }
+                    >
+                      Add another unit/year group
+                    </button>
                   )}
                 </div>
               </fieldset>
@@ -1447,8 +1706,58 @@ export default function ExamsPage () {
             <option value='unit'>Sort by unit</option>
             <option value='status'>Sort by status</option>
           </select>
+          {canManageExams && (
+            <div className='toolbar-actions'>
+              <button
+                type='button'
+                className='secondary-button'
+                onClick={() => {
+                  const eligibleIds = visibleRows
+                    .filter(
+                      item =>
+                        (item.status || 'SCHEDULED') === 'SCHEDULED' &&
+                        item.exam_date >= today
+                    )
+                    .map(item => Number(item.id))
+                  setSelectedRollbackExamIds(current =>
+                    current.length === eligibleIds.length ? [] : eligibleIds
+                  )
+                }}
+              >
+                Select visible exams
+              </button>
+              <button
+                type='button'
+                className='primary-button'
+                disabled={
+                  !selectedRollbackExamIds.length ||
+                  rollbackExamsMutation.isPending
+                }
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `Roll ${selectedRollbackExamIds.length} selected exam(s) back to staging? They will be removed from the published exams list.`
+                    )
+                  ) {
+                    rollbackExamsMutation.mutate(selectedRollbackExamIds)
+                  }
+                }}
+              >
+                {rollbackExamsMutation.isPending
+                  ? 'Rolling back…'
+                  : `Rollback to staging (${selectedRollbackExamIds.length})`}
+              </button>
+            </div>
+          )}
         </div>
       </section>
+
+      {rollbackExamsMutation.error && (
+        <div className='schedule-conflict-alert' role='alert'>
+          <strong>Could not roll exams back</strong>
+          <span>{rollbackExamsMutation.error.message}</span>
+        </div>
+      )}
 
       <section className='content-panel'>
         {isLoading ? (
@@ -1460,6 +1769,7 @@ export default function ExamsPage () {
             <table>
               <thead>
                 <tr>
+                  {canManageExams && <th>Select</th>}
                   <th>Date</th>
                   <th>Day</th>
                   <th>Unit</th>
@@ -1477,6 +1787,29 @@ export default function ExamsPage () {
                 {filteredRows.length ? (
                   visibleRows.map(item => (
                     <tr key={item.id ?? `${item.exam_date}-${item.course_id}`}>
+                    {canManageExams && (
+                      <td>
+                        {(item.status || 'SCHEDULED') === 'SCHEDULED' &&
+                        item.exam_date >= today ? (
+                          <input
+                            type='checkbox'
+                            aria-label={`Select exam ${item.unitCode || item.unit_code || item.course_id}`}
+                            checked={selectedRollbackExamIds.includes(
+                              Number(item.id)
+                            )}
+                            onChange={event =>
+                              setSelectedRollbackExamIds(current =>
+                                event.target.checked
+                                  ? [...current, Number(item.id)]
+                                  : current.filter(
+                                      id => id !== Number(item.id)
+                                    )
+                              )
+                            }
+                          />
+                        ) : null}
+                      </td>
+                    )}
                       <td>{formatExamDate(item.exam_date)}</td>
                       <td>{examDay(item.exam_date)}</td>
                       <td>
@@ -1550,7 +1883,7 @@ export default function ExamsPage () {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan={canManageExams ? 11 : 10}>No exams found.</td>
+                    <td colSpan={canManageExams ? 12 : 10}>No exams found.</td>
                   </tr>
                 )}
               </tbody>

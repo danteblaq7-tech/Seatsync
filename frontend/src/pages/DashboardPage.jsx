@@ -42,6 +42,20 @@ export default function DashboardPage () {
 
   const cards = Array.isArray(summary.stats) ? summary.stats : []
   const lists = summary.lists || {}
+  const hour = new Date().getHours()
+  const greeting =
+    hour >= 5 && hour < 12
+      ? 'Good morning'
+      : hour >= 12 && hour < 17
+      ? 'Good afternoon'
+      : hour >= 17 && hour < 21
+      ? 'Good evening'
+      : 'Welcome back'
+  const roles = user?.roles || []
+  const name = [user?.firstName, user?.lastName].filter(Boolean).join(' ')
+  const greetingName = roles.includes('LECTURER')
+    ? `Dr. ${name || 'Lecturer'}`
+    : name || 'there'
 
   const renderList = (items = [], emptyLabel = 'No data') => {
     if (!items.length) {
@@ -99,7 +113,9 @@ export default function DashboardPage () {
       <div className='page-header'>
         <div>
           <p className='eyebrow'>Overview</p>
-          <h1>Dashboard</h1>
+          <h1>
+            {greeting}, {greetingName}
+          </h1>
         </div>
       </div>
 

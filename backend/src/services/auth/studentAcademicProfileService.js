@@ -333,7 +333,7 @@ export const completeStudentAcademicProfile = async (
     const cohort = cohorts[0]
     if (!cohort) {
       throw new Error(
-        'No active cohort matches this programme, intake year, academic year, and cohort type.'
+        "We couldn't find an active cohort for the programme, intake year, and study period you selected. Your class representative or administrator may not have set up this cohort for that semester yet. Please check your selections or contact them for help."
       )
     }
 

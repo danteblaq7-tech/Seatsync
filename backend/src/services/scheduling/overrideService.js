@@ -3,9 +3,14 @@ import { emitSocketEvent } from '../../socket/socketEvents.js'
 import {
   createRow,
   findById,
-  query,
-  listRows
+  query
 } from '../../repositories/sqlRepository.js'
+import db from '../../config/db.js'
+import { createNotification } from '../notifications/notificationService.js'
+import {
+  removeReplacedTimetableEntries,
+  weekdayNameFromDateOnly
+} from '../scheduleOverrideAvailability.js'
 
 export const createScheduleOverride = async ({
   timetableEntryId,
@@ -41,6 +46,41 @@ export const createScheduleOverride = async ({
     }
   }
 
+  const dateParts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(effectiveDate))
+  if (
+    !dateParts ||
+    new Date(
+      Date.UTC(Number(dateParts[1]), Number(dateParts[2]) - 1, Number(dateParts[3]))
+    )
+      .toISOString()
+      .slice(0, 10) !== effectiveDate
+  ) {
+    return {
+      valid: false,
+      conflicts: [
+        {
+          type: 'VALIDATION_ERROR',
+          message: 'Enter a valid make-up date.'
+        }
+      ]
+    }
+  }
+  const dateValidation = await query(
+    'SELECT ? < CURRENT_DATE() AS is_past',
+    [effectiveDate]
+  )
+  if (Number(dateValidation[0]?.is_past)) {
+    return {
+      valid: false,
+      conflicts: [
+        {
+          type: 'VALIDATION_ERROR',
+          message: 'A make-up class cannot be scheduled in the past.'
+        }
+      ]
+    }
+  }
+
   const timetableEntry = await findById('timetable_entries', timetableEntryId)
   if (!timetableEntry) {
     return {
@@ -48,6 +88,10 @@ export const createScheduleOverride = async ({
       conflicts: [{ type: 'VALIDATION_ERROR', message: 'Class not found.' }]
     }
   }
+  const unit = await findById(
+    'units',
+    timetableEntry.unitId ?? timetableEntry.unit_id
+  )
 
   const roles = Array.isArray(requesterRoles)
     ? requesterRoles
@@ -145,12 +189,15 @@ export const createScheduleOverride = async ({
        AND TIME(start_datetime) < ? AND TIME(end_datetime) > ?`,
       [newVenueId, effectiveDate, effectiveDate, newEndTime, newStartTime]
     ))
-  const appliedOverrides = await listRows('schedule_overrides', {
-    effective_date: effectiveDate,
-    status: 'APPROVED'
-  })
+  const appliedOverrides = await query(
+    `SELECT * FROM schedule_overrides
+     WHERE effective_date = ?
+       AND status IN ('APPROVED', 'CANCELLED_NO_RESTORE')`,
+    [effectiveDate]
+  )
   const matchingOverrides = appliedOverrides.filter(
     override =>
+      override.status === 'APPROVED' &&
       Number(override.newVenueId ?? override.new_venue_id) ===
       Number(newVenueId)
   )
@@ -170,15 +217,7 @@ export const createScheduleOverride = async ({
       ]
     }
   }
-  const dayOfWeek = [
-    'Sunday',
-    'Monday',
-    'Tuesday',
-    'Wednesday',
-    'Thursday',
-    'Friday',
-    'Saturday'
-  ][new Date(`${effectiveDate}T00:00:00Z`).getUTCDay()]
+  const dayOfWeek = weekdayNameFromDateOnly(effectiveDate)
   const [timetableRows, examRows] = await Promise.all([
     query(
       `SELECT te.*, GROUP_CONCAT(DISTINCT tec.cohort_id) AS cohort_ids
@@ -205,16 +244,11 @@ export const createScheduleOverride = async ({
       [effectiveDate]
     )
   ])
-  const overriddenEntryIds = new Set(
-    appliedOverrides.map(override =>
-      Number(override.timetableEntryId ?? override.timetable_entry_id)
-    )
-  )
-  const otherEntries = timetableRows.filter(
-    row =>
-      Number(row.id) !== Number(timetableEntryId) &&
-      !overriddenEntryIds.has(Number(row.id))
-  )
+  const otherEntries = removeReplacedTimetableEntries(
+    timetableRows,
+    appliedOverrides,
+    effectiveDate
+  ).filter(row => Number(row.id) !== Number(timetableEntryId))
   const currentEntry = timetableRows.find(
     row => Number(row.id) === Number(timetableEntryId)
   )
@@ -271,9 +305,356 @@ export const createScheduleOverride = async ({
   })
 
   emitSocketEvent('timetable:override_created', record)
+  emitSocketEvent('timetable:changed', {
+    action: 'makeup-class-created',
+    ids: [record.id]
+  })
+
+  const recipients = await query(
+    `SELECT DISTINCT s.user_id
+     FROM students s
+     WHERE s.status = 'ACTIVE' AND s.user_id IS NOT NULL
+       AND s.cohort_id IN (
+         SELECT tec.cohort_id FROM timetable_entry_cohorts tec
+         WHERE tec.timetable_entry_id = ?
+         UNION
+         SELECT te.cohort_id FROM timetable_entries te
+         WHERE te.id = ? AND te.cohort_id IS NOT NULL
+       )`,
+    [timetableEntryId, timetableEntryId]
+  )
+  await Promise.all(
+    recipients.map(({ user_id }) =>
+      createNotification({
+        userId: user_id,
+        type: 'schedule:makeup_created',
+        title: 'Make-up class scheduled',
+        message: `${unit?.code ? `${unit.code} · ` : ''}${
+          unit?.name || 'Class'
+        } has been rescheduled to ${dayOfWeek}, ${effectiveDate}, ${newStartTime}–${newEndTime} at ${
+          newVenue.code ? `${newVenue.code} · ` : ''
+        }${newVenue.name}.`,
+        entityType: 'schedule_override',
+        entityId: record.id
+      })
+    )
+  )
 
   return {
     valid: true,
     data: record
   }
+}
+
+const restorationConflictMessages = async (
+  connection,
+  override,
+  venueId,
+  startTime,
+  endTime
+) => {
+  if (!venueId) return []
+  const date = String(override.effective_date).slice(0, 10)
+  const day = weekdayNameFromDateOnly(date)
+  const dayVariants = [
+    day,
+    day?.slice(0, 3),
+    day?.toUpperCase(),
+    day?.slice(0, 3).toUpperCase()
+  ]
+  const [recurringRows] = await connection.execute(
+    `SELECT te.id FROM timetable_entries te
+     WHERE te.status = 'SCHEDULED' AND te.id <> ? AND te.venue_id = ?
+       AND te.day_of_week IN (?, ?, ?, ?)
+       AND te.start_time < ? AND te.end_time > ?
+       AND NOT EXISTS (
+         SELECT 1 FROM schedule_overrides so
+         WHERE so.timetable_entry_id = te.id AND so.effective_date = ?
+           AND so.status IN ('APPROVED', 'CANCELLED_NO_RESTORE')
+       )
+     LIMIT 1`,
+    [
+      Number(override.timetable_entry_id),
+      Number(venueId),
+      ...dayVariants,
+      endTime,
+      startTime,
+      date
+    ]
+  )
+  if (recurringRows.length) {
+    return [
+      'The original venue is booked by another timetable class at that time.'
+    ]
+  }
+
+  const [makeupRows] = await connection.execute(
+    `SELECT id FROM schedule_overrides
+     WHERE id <> ? AND effective_date = ? AND status = 'APPROVED'
+       AND new_venue_id = ? AND new_start_time < ? AND new_end_time > ?
+     LIMIT 1`,
+    [Number(override.id), date, Number(venueId), endTime, startTime]
+  )
+  if (makeupRows.length) {
+    return [
+      'The original venue is booked by another make-up class at that time.'
+    ]
+  }
+
+  const [examRows] = await connection.execute(
+    `SELECT e.id FROM exams e
+     JOIN exam_venue_allocations eva ON eva.exam_id = e.id
+     WHERE e.status = 'SCHEDULED' AND e.exam_date = ?
+       AND eva.venue_id = ? AND e.start_time < ? AND e.end_time > ?
+     LIMIT 1`,
+    [date, Number(venueId), endTime, startTime]
+  )
+  if (examRows.length) {
+    return ['The original venue is booked by an exam at that time.']
+  }
+
+  const [blockRows] = await connection.execute(
+    `SELECT id FROM venue_blocks
+     WHERE venue_id = ? AND status = 'ACTIVE'
+       AND DATE(start_datetime) <= ? AND DATE(end_datetime) >= ?
+       AND TIME(start_datetime) < ? AND TIME(end_datetime) > ?
+     LIMIT 1`,
+    [Number(venueId), date, date, endTime, startTime]
+  )
+  return blockRows.length
+    ? ['The original venue is blocked during that time.']
+    : []
+}
+
+export const cancelScheduleOverride = async ({
+  overrideId,
+  requesterUserId,
+  requesterRoles = []
+}) => {
+  const id = Number(overrideId)
+  if (!Number.isInteger(id) || id < 1) {
+    throw new Error('Select a valid make-up class to cancel.')
+  }
+  const roles = Array.isArray(requesterRoles)
+    ? requesterRoles
+    : [requesterRoles]
+  const connection = await db.getConnection()
+  let result
+  let notificationRecipients = []
+  let notificationDetails
+  try {
+    await connection.beginTransaction()
+    const [rows] = await connection.execute(
+      `SELECT so.*, DATE_FORMAT(so.effective_date, '%Y-%m-%d') AS effective_date,
+         te.lecturer_id, te.venue_id AS recurring_venue_id,
+         te.start_time AS recurring_start_time,
+         te.end_time AS recurring_end_time
+       FROM schedule_overrides so
+       JOIN timetable_entries te ON te.id = so.timetable_entry_id
+       WHERE so.id = ? FOR UPDATE`,
+      [id]
+    )
+    const override = rows[0]
+    if (!override) throw new Error('Make-up class not found.')
+    if (override.status !== 'APPROVED') {
+      throw new Error('This make-up class is no longer active.')
+    }
+
+    if (!roles.includes('ADMIN')) {
+      const [lecturers] = await connection.execute(
+        'SELECT id FROM lecturers WHERE id = ? AND user_id = ?',
+        [Number(override.lecturer_id), Number(requesterUserId)]
+      )
+      if (!roles.includes('LECTURER') || !lecturers.length) {
+        throw new Error('You may only cancel your own make-up classes.')
+      }
+    }
+
+    const originalVenueId =
+      override.original_venue_id ?? override.recurring_venue_id
+    const originalStartTime =
+      override.original_start_time ?? override.recurring_start_time
+    const originalEndTime =
+      override.original_end_time ?? override.recurring_end_time
+    const [detailsRows, cohortRows, recipientRows] = await Promise.all([
+      connection.execute(
+        `SELECT u.code AS unit_code, u.name AS unit_name,
+           DAYNAME(so.effective_date) AS makeup_day,
+           TIME_FORMAT(so.new_start_time, '%H:%i') AS makeup_start_time,
+           TIME_FORMAT(so.new_end_time, '%H:%i') AS makeup_end_time,
+           TIME_FORMAT(
+             COALESCE(so.original_start_time, te.start_time), '%H:%i'
+           ) AS original_start_time,
+           TIME_FORMAT(
+             COALESCE(so.original_end_time, te.end_time), '%H:%i'
+           ) AS original_end_time,
+           new_venue.code AS new_venue_code,
+           new_venue.name AS new_venue_name,
+           original_venue.code AS original_venue_code,
+           original_venue.name AS original_venue_name
+         FROM schedule_overrides so
+         JOIN timetable_entries te ON te.id = so.timetable_entry_id
+         JOIN units u ON u.id = te.unit_id
+         LEFT JOIN venues new_venue ON new_venue.id = so.new_venue_id
+         LEFT JOIN venues original_venue
+           ON original_venue.id = COALESCE(so.original_venue_id, te.venue_id)
+         WHERE so.id = ?`,
+        [Number(override.id)]
+      ),
+      connection.execute(
+        `SELECT DISTINCT c.name
+         FROM cohorts c
+         WHERE c.id IN (
+           SELECT te.cohort_id FROM timetable_entries te
+           WHERE te.id = ? AND te.cohort_id IS NOT NULL
+           UNION
+           SELECT tec.cohort_id FROM timetable_entry_cohorts tec
+           WHERE tec.timetable_entry_id = ?
+         )
+         ORDER BY c.name`,
+        [
+          Number(override.timetable_entry_id),
+          Number(override.timetable_entry_id)
+        ]
+      ),
+      connection.execute(
+        `SELECT DISTINCT audience.user_id FROM (
+           SELECT s.user_id
+           FROM timetable_entries te
+           JOIN students s ON s.cohort_id = te.cohort_id
+           WHERE te.id = ? AND s.status = 'ACTIVE' AND s.user_id IS NOT NULL
+           UNION
+           SELECT s.user_id
+           FROM timetable_entry_cohorts tec
+           JOIN students s ON s.cohort_id = tec.cohort_id
+           WHERE tec.timetable_entry_id = ?
+             AND s.status = 'ACTIVE' AND s.user_id IS NOT NULL
+           UNION
+           SELECT rep_user.user_id
+           FROM cohort_representatives cr
+           JOIN students rep_student ON rep_student.id = cr.student_id
+           JOIN users rep_user ON rep_user.id = rep_student.user_id
+           WHERE cr.is_active = TRUE
+             AND (cr.end_date IS NULL OR cr.end_date >= CURDATE())
+             AND cr.cohort_id IN (
+               SELECT te.cohort_id FROM timetable_entries te
+               WHERE te.id = ? AND te.cohort_id IS NOT NULL
+               UNION
+               SELECT tec.cohort_id FROM timetable_entry_cohorts tec
+               WHERE tec.timetable_entry_id = ?
+             )
+         ) audience
+         WHERE audience.user_id IS NOT NULL`,
+        [
+          Number(override.timetable_entry_id),
+          Number(override.timetable_entry_id),
+          Number(override.timetable_entry_id),
+          Number(override.timetable_entry_id)
+        ]
+      )
+    ])
+    notificationDetails = detailsRows[0][0]
+    notificationDetails.cohort_names = cohortRows[0]
+      .map(row => row.name)
+      .join(', ')
+    notificationRecipients = recipientRows[0].map(row => Number(row.user_id))
+    const conflicts = await restorationConflictMessages(
+      connection,
+      override,
+      originalVenueId,
+      originalStartTime,
+      originalEndTime
+    )
+    const nextStatus = conflicts.length
+      ? 'CANCELLED_NO_RESTORE'
+      : 'CANCELLED'
+    await connection.execute(
+      'UPDATE schedule_overrides SET status = ? WHERE id = ?',
+      [nextStatus, Number(override.id)]
+    )
+    const warning = conflicts.length
+      ? `${conflicts.join(' ')} The make-up class was cancelled and its venue is free. Book another make-up class for this session.`
+      : 'The make-up class was cancelled, its venue is free, and the original venue and time are restored.'
+    await connection.execute(
+      `INSERT INTO audit_logs
+       (user_id, action, entity_type, entity_id, old_values, new_values, reason)
+       VALUES (?, 'CANCEL_MAKEUP_CLASS', 'schedule_override', ?, ?, ?, ?)`,
+      [
+        Number(requesterUserId),
+        Number(override.id),
+        JSON.stringify({ status: 'APPROVED' }),
+        JSON.stringify({
+          status: nextStatus,
+          originalRestored: conflicts.length === 0,
+          conflicts
+        }),
+        warning
+      ]
+    )
+    await connection.commit()
+    result = {
+      id: Number(override.id),
+      status: nextStatus,
+      originalRestored: conflicts.length === 0,
+      conflicts,
+      message: warning
+    }
+  } catch (error) {
+    await connection.rollback()
+    throw error
+  } finally {
+    connection.release()
+  }
+
+  emitSocketEvent('timetable:override_cancelled', result)
+  emitSocketEvent('timetable:changed', {
+    action: 'makeup-class-cancelled',
+    ids: [result.id]
+  })
+  const details = notificationDetails || {}
+  const unitLabel = [details.unit_code, details.unit_name]
+    .filter(Boolean)
+    .join(' · ') || 'Class'
+  const makeupVenue = [details.new_venue_code, details.new_venue_name]
+    .filter(Boolean)
+    .join(' · ') || 'the assigned make-up venue'
+  const originalVenue = [
+    details.original_venue_code,
+    details.original_venue_name
+  ]
+    .filter(Boolean)
+    .join(' · ') || 'the original venue'
+  const cohortLabel = details.cohort_names
+    ? ` for ${details.cohort_names}`
+    : ''
+  const restorationMessage = result.originalRestored
+    ? `The original class venue and time have been restored to ${originalVenue}, ${details.original_start_time}–${details.original_end_time}.`
+    : `The original venue/time could not be restored because of a booking conflict. The lecturer or administrator should arrange another make-up class.`
+  const notificationMessage =
+    `The make-up class${cohortLabel} for ${unitLabel} has been cancelled. ` +
+    `It was scheduled for ${details.makeup_day}, ${override.effective_date}, ` +
+    `${details.makeup_start_time}–${details.makeup_end_time} at ${makeupVenue}. ` +
+    `${restorationMessage}`
+  const notificationResults = await Promise.allSettled(
+    notificationRecipients.map(userId =>
+      createNotification({
+        userId,
+        type: 'schedule:makeup_cancelled',
+        title: 'Make-up class cancelled',
+        message: notificationMessage,
+        entityType: 'schedule_override',
+        entityId: result.id
+      })
+    )
+  )
+  notificationResults.forEach((notificationResult, index) => {
+    if (notificationResult.status === 'rejected') {
+      console.error('[SCHEDULE][MAKEUP_CANCELLATION_NOTIFICATION_FAILED]', {
+        overrideId: result.id,
+        userId: notificationRecipients[index],
+        error: notificationResult.reason?.message || 'Unknown notification error'
+      })
+    }
+  })
+  return result
 }

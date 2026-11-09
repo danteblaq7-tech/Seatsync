@@ -19,6 +19,7 @@
     "migrate:unit-id-columns": "node src/database/renameCourseIdToUnitIdMigration.js",
     "migrate:academic-progression": "node src/database/academicProgressionMigration.js",
     "migrate:cohort-membership": "node src/database/cohortMembershipMigration.js",
+    "migrate:exam-sitting-groups": "node src/database/examSittingGroupsMigration.js",
     "migrate:exam-type": "node src/database/removeExamType.js",
     "test": "node --test"
   },

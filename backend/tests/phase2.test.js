@@ -36,8 +36,8 @@ test('records a venue block when the period is valid', () => {
   assert.equal(result.data.reason, 'Maintenance')
 })
 
-test('creates a persisted notification for a timetable change', () => {
-  const notification = createNotification({
+test('creates a persisted notification for a timetable change', async () => {
+  const notification = await createNotification({
     userId: 7,
     type: 'timetable:updated',
     title: 'Timetable changed',

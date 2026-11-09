@@ -1,8 +1,8 @@
 import {
   createRow,
+  findById,
   listRows,
-  query,
-  updateRow
+  query
 } from '../../repositories/sqlRepository.js'
 import { emitSocketEvent } from '../../socket/socketEvents.js'
 
@@ -37,7 +37,7 @@ export const createNotification = async ({
   })
 
   const serialized = serializeNotification(record)
-  emitSocketEvent('notification:new', serialized)
+  emitSocketEvent('notification:new')
   return serialized
 }
 
@@ -50,13 +50,14 @@ export const listNotifications = async (userId = null) => {
 }
 
 export const markNotificationRead = async id => {
-  const notification = await updateRow('notifications', id, {
-    is_read: true,
-    read_at: new Date().toISOString()
-  })
+  await query(
+    'UPDATE notifications SET is_read = TRUE, read_at = CURRENT_TIMESTAMP WHERE id = ?',
+    [id]
+  )
+  const notification = await findById('notifications', id)
   if (!notification) return null
 
   const serialized = serializeNotification(notification)
-  emitSocketEvent('notification:read', serialized)
+  emitSocketEvent('notification:read')
   return serialized
 }

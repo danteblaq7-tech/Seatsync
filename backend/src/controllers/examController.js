@@ -1,5 +1,7 @@
 import { normalizeDateValue, query } from '../repositories/sqlRepository.js'
 import { deleteExam } from '../services/exams/examService.js'
+import { getExamVisibility } from '../services/timetableVisibility.js'
+import { buildTimetableQueryFilters } from '../services/timetableQueryFilters.js'
 import { emitSocketEvent } from '../socket/socketEvents.js'
 
 export const deleteExamController = async (req, res) => {
@@ -25,25 +27,43 @@ export const deleteExamController = async (req, res) => {
 }
 
 export const listExamsController = async (req, res) => {
-  const rows = await query(`
-    SELECT e.*, e.unit_id AS course_id,
-      DATE_FORMAT(e.exam_date, '%Y-%m-%d') AS exam_date_iso,
-      u.code AS unit_code,
-      u.name AS unit_name,
-      GROUP_CONCAT(DISTINCT p.name SEPARATOR ', ') AS programme_names,
-      GROUP_CONCAT(DISTINCT CONCAT(ec.cohort_id, ':', COALESCE(c.name, 'Cohort'), ':', ec.student_count) SEPARATOR '|') AS cohort_details,
-      GROUP_CONCAT(DISTINCT CONCAT(eva.venue_id, ':', COALESCE(v.name, 'Venue'), ':', eva.allocated_capacity, ':', COALESCE(v.capacity, 0)) SEPARATOR '|') AS venue_details
-    FROM exams e
-    LEFT JOIN units u ON u.id = e.unit_id
-    LEFT JOIN unit_programmes up ON up.unit_id = u.id
-    LEFT JOIN programmes p ON p.id = up.programme_id
-    LEFT JOIN exam_cohorts ec ON ec.exam_id = e.id
-    LEFT JOIN cohorts c ON c.id = ec.cohort_id
-    LEFT JOIN exam_venue_allocations eva ON eva.exam_id = e.id
-    LEFT JOIN venues v ON v.id = eva.venue_id
-    GROUP BY e.id
-    ORDER BY e.exam_date, e.start_time, e.id
-  `)
+  const visibility = getExamVisibility(req.user, {
+    timetable: req.query.scope === 'timetable'
+  })
+  const filters =
+    req.query.scope === 'timetable'
+      ? buildTimetableQueryFilters(req.query, { kind: 'exam' })
+      : { conditions: [], params: [] }
+  const rows = await query(
+    `
+      SELECT e.*, e.unit_id AS course_id,
+        DATE_FORMAT(e.exam_date, '%Y-%m-%d') AS exam_date_iso,
+        u.code AS unit_code,
+        u.name AS unit_name,
+        GROUP_CONCAT(DISTINCT p.name SEPARATOR ', ') AS programme_names,
+        GROUP_CONCAT(DISTINCT CONCAT(ec.cohort_id, ':', COALESCE(c.name, 'Cohort'), ':', ec.student_count) SEPARATOR '|') AS cohort_details,
+        GROUP_CONCAT(DISTINCT CONCAT(eva.venue_id, ':', COALESCE(v.name, 'Venue'), ':', eva.allocated_capacity, ':', COALESCE(v.capacity, 0)) SEPARATOR '|') AS venue_details
+      FROM exams e
+      LEFT JOIN units u ON u.id = e.unit_id
+      LEFT JOIN unit_programmes up ON up.unit_id = u.id
+      LEFT JOIN programmes p ON p.id = up.programme_id
+      LEFT JOIN exam_cohorts ec ON ec.exam_id = e.id
+      LEFT JOIN cohorts c ON c.id = ec.cohort_id
+      LEFT JOIN exam_venue_allocations eva ON eva.exam_id = e.id
+      LEFT JOIN venues v ON v.id = eva.venue_id
+      WHERE 1 = 1 ${visibility.clause}
+        ${
+          filters.conditions.length
+            ? `AND ${filters.conditions
+                .map(condition => `(${condition})`)
+                .join(' AND ')}`
+            : ''
+        }
+      GROUP BY e.id
+      ORDER BY e.exam_date, e.start_time, e.id
+    `,
+    [...visibility.params, ...filters.params]
+  )
 
   const data = rows.map(row => ({
     ...row,

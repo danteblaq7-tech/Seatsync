@@ -8,16 +8,25 @@ import {
 import db from '../config/db.js'
 import { validateTimetableEntry } from './scheduling/conflictService.js'
 import { validateAcademicPeriod } from './academicProgressionValidation.js'
+import { getTimetableVisibility } from './timetableVisibility.js'
+import {
+  removeReplacedTimetableEntries,
+  weekdayNameFromDateOnly
+} from './scheduleOverrideAvailability.js'
+import { buildTimetableQueryFilters } from './timetableQueryFilters.js'
 
-export const listTimetableEntries = async user => {
-  const roles = Array.isArray(user?.roles) ? user.roles : []
-  const lecturerId = roles.includes('LECTURER')
-    ? (
-        await query('SELECT id FROM lecturers WHERE user_id = ? LIMIT 1', [
-          user.id
-        ])
-      )[0]?.id
-    : null
+export const listTimetableEntries = async (user, filters = {}) => {
+  const visibility = getTimetableVisibility(user)
+  const eventFilters = buildTimetableQueryFilters(filters)
+  const eventConditions = [
+    ...(visibility.clause
+      ? [visibility.clause.slice('WHERE '.length)]
+      : []),
+    ...eventFilters.conditions
+  ]
+  const eventWhere = eventConditions.length
+    ? `WHERE ${eventConditions.map(condition => `(${condition})`).join(' AND ')}`
+    : ''
   const entries = (
     await rawQuery(
       `
@@ -38,11 +47,11 @@ export const listTimetableEntries = async user => {
     LEFT JOIN venues v ON v.id = te.venue_id
     LEFT JOIN timetable_entry_cohorts tec ON tec.timetable_entry_id = te.id
     LEFT JOIN timetable_entry_programmes tep ON tep.timetable_entry_id = te.id
-    ${lecturerId ? 'WHERE te.lecturer_id = ?' : ''}
+    ${eventWhere}
     GROUP BY te.id
     ORDER BY te.id
   `,
-      lecturerId ? [lecturerId] : []
+      [...visibility.params, ...eventFilters.params]
     )
   ).map(row => ({
     ...row,
@@ -61,8 +70,20 @@ export const listTimetableEntries = async user => {
       ? String(row.programme_ids).split(',').map(Number)
       : []
   }))
+  const overrideFilters = buildTimetableQueryFilters(filters, {
+    override: true
+  })
+  const overrideConditions = [
+    "so.status IN ('APPROVED', 'CANCELLED_NO_RESTORE')",
+    'so.effective_date >= CURDATE()',
+    ...(visibility.clause
+      ? [visibility.clause.slice('WHERE '.length)]
+      : []),
+    ...overrideFilters.conditions
+  ]
   const overrides = await rawQuery(
     `SELECT so.*, DATE_FORMAT(so.effective_date, '%Y-%m-%d') AS effective_date,
+      DAYNAME(so.effective_date) AS override_day,
       te.academic_year_id, te.semester_id, te.unit_id AS course_id,
        te.lecturer_id, te.event_type, te.status AS recurring_status,
        te.cohort_id, u.code AS unit_code, u.name AS unit_name,
@@ -75,58 +96,43 @@ export const listTimetableEntries = async user => {
      JOIN venues v ON v.id = so.new_venue_id
      LEFT JOIN timetable_entry_cohorts tec ON tec.timetable_entry_id = te.id
      LEFT JOIN timetable_entry_programmes tep ON tep.timetable_entry_id = te.id
-    WHERE so.status = 'APPROVED' AND so.effective_date >= CURDATE() ${
-      lecturerId ? 'AND te.lecturer_id = ?' : ''
-    }
+    WHERE ${overrideConditions
+      .map(condition => `(${condition})`)
+      .join(' AND ')}
      GROUP BY so.id
      ORDER BY so.effective_date, so.new_start_time`,
-    lecturerId ? [lecturerId] : []
+    [...visibility.params, ...overrideFilters.params]
   )
   return [
     ...entries,
-    ...overrides.map(item => ({
-      ...item,
-      id: `makeup-${item.id}`,
-      overrideId: Number(item.id),
-      isMakeup: true,
-      effective_date: item.effective_date,
-      day_of_week: weekdayFromDate(item.effective_date),
-      venue_id: item.new_venue_id,
-      venue_name: item.venue_name,
-      venue_code: item.venue_code,
-      start_time: item.new_start_time,
-      end_time: item.new_end_time,
-      event_type: 'MAKEUP',
-      unitCode: item.unit_code,
-      unitName: item.unit_name,
-      cohortIds: item.cohort_ids
-        ? String(item.cohort_ids).split(',').map(Number)
-        : [],
-      programmeIds: item.programme_ids
-        ? String(item.programme_ids).split(',').map(Number)
-        : []
-    }))
+    ...overrides
+      .filter(item => item.status === 'APPROVED')
+      .map(item => ({
+        ...item,
+        id: `makeup-${item.id}`,
+        overrideId: Number(item.id),
+        isMakeup: true,
+        effective_date: item.effective_date,
+        day_of_week:
+          item.override_day || weekdayNameFromDateOnly(item.effective_date),
+        venue_id: item.new_venue_id,
+        venue_name: item.venue_name,
+        venue_code: item.venue_code,
+        start_time: item.new_start_time,
+        end_time: item.new_end_time,
+        event_type: 'MAKEUP',
+        unitCode: item.unit_code,
+        unitName: item.unit_name,
+        cohortIds: item.cohort_ids
+          ? String(item.cohort_ids).split(',').map(Number)
+          : [],
+        programmeIds: item.programme_ids
+          ? String(item.programme_ids).split(',').map(Number)
+          : []
+      }))
   ]
 }
 export const getTimetableEntry = async id => findById('timetable_entries', id)
-
-const weekdayFromDate = value => {
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(value || ''))
-  if (!match) return null
-  return [
-    'Sunday',
-    'Monday',
-    'Tuesday',
-    'Wednesday',
-    'Thursday',
-    'Friday',
-    'Saturday'
-  ][
-    new Date(
-      Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
-    ).getUTCDay()
-  ]
-}
 
 export const createTimetableEntry = async payload => {
   const actorRoles = Array.isArray(payload.actor_roles)
@@ -206,7 +212,7 @@ export const createTimetableEntry = async payload => {
     `)
       ).map(exam => ({
         ...exam,
-        day_of_week: weekdayFromDate(exam.exam_date),
+        day_of_week: weekdayNameFromDateOnly(exam.exam_date),
         start_time: String(exam.start_time).slice(0, 5),
         end_time: String(exam.end_time).slice(0, 5),
         venue_ids: exam.venue_ids || '',
@@ -416,11 +422,13 @@ export const listAvailability = async ({
   let activeBlocks = []
   const normalizedStart = String(startTime || '').slice(0, 5)
   const normalizedEnd = String(endTime || '').slice(0, 5)
-  const requestedDay = day || (date ? weekdayFromDate(date) : null)
+  const requestedDay = day || (date ? weekdayNameFromDateOnly(date) : null)
   const queryDate = date || null
 
   if ((queryDate || requestedDay) && normalizedStart && normalizedEnd) {
-    const dayOfWeek = queryDate ? weekdayFromDate(queryDate) : requestedDay
+    const dayOfWeek = queryDate
+      ? weekdayNameFromDateOnly(queryDate)
+      : requestedDay
     const shortDay = String(dayOfWeek || '')
       .slice(0, 3)
       .toUpperCase()
@@ -436,17 +444,13 @@ export const listAvailability = async ({
     )
 
     const appliedOverrides = queryDate
-      ? await listRows('schedule_overrides', {
-          effective_date: queryDate,
-          status: 'APPROVED'
-        })
+      ? await rawQuery(
+          `SELECT * FROM schedule_overrides
+           WHERE effective_date = ?
+             AND status IN ('APPROVED', 'CANCELLED_NO_RESTORE')`,
+          [queryDate]
+        )
       : []
-    const overriddenEntryIds = new Set(
-      appliedOverrides.map(item =>
-        Number(item.timetableEntryId ?? item.timetable_entry_id)
-      )
-    )
-
     const exams = queryDate
       ? await rawQuery(
           `SELECT e.id, e.start_time, e.end_time, GROUP_CONCAT(DISTINCT eva.venue_id) AS venue_ids
@@ -465,10 +469,12 @@ export const listAvailability = async ({
         )
 
     bookedEvents = [
-      ...entriesOnDay.filter(
-        item =>
-          !overriddenEntryIds.has(Number(item.id)) &&
-          Number(item.id) !== Number(excludeTimetableEntryId)
+      ...removeReplacedTimetableEntries(
+        entriesOnDay,
+        appliedOverrides,
+        queryDate
+      ).filter(
+        item => Number(item.id) !== Number(excludeTimetableEntryId)
       ),
       ...exams.map(item => ({
         ...item,
@@ -477,7 +483,9 @@ export const listAvailability = async ({
         start_time: String(item.start_time || '').slice(0, 5),
         end_time: String(item.end_time || '').slice(0, 5)
       })),
-      ...appliedOverrides.map(item => ({
+      ...appliedOverrides
+        .filter(item => item.status === 'APPROVED')
+        .map(item => ({
         id: `makeup-${item.id}`,
         venue_id: item.newVenueId ?? item.new_venue_id,
         lecturer_id: null,
@@ -491,7 +499,7 @@ export const listAvailability = async ({
           5
         ),
         event_type: 'MAKEUP'
-      }))
+        }))
     ]
 
     if (queryDate) {

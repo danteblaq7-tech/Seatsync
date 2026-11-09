@@ -48,8 +48,10 @@ import {
 } from '../services/academicStructureService.js'
 import { createAuditLog } from '../services/security/securityService.js'
 import {
+  listCohortMembers,
   listCohortMembershipRequests,
   listPendingCohortProfileRequests,
+  getCohortRequestCounts,
   reviewCohortMembershipRequest,
   reviewCohortProfileRequest
 } from '../services/cohortApprovalService.js'
@@ -183,6 +185,10 @@ export const getPendingCohortProfileRequests = async (_req, res) => {
   res.json({ data: await listPendingCohortProfileRequests() })
 }
 
+export const getCohortRequestCountsController = async (req, res) => {
+  res.json({ data: await getCohortRequestCounts(req.user) })
+}
+
 export const reviewPendingCohortProfileRequest = async (req, res) => {
   try {
     const data = await reviewCohortProfileRequest(
@@ -209,6 +215,17 @@ export const getCohortMembershipRequests = async (req, res) => {
   try {
     return res.json({
       data: await listCohortMembershipRequests(req.params.id, req.user)
+    })
+  } catch (error) {
+    const status = error.message.includes('only manage') ? 403 : 400
+    return res.status(status).json({ message: error.message })
+  }
+}
+
+export const getCohortMembers = async (req, res) => {
+  try {
+    return res.json({
+      data: await listCohortMembers(req.params.id, req.user)
     })
   } catch (error) {
     const status = error.message.includes('only manage') ? 403 : 400

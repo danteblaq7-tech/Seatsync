@@ -8,6 +8,7 @@ import {
   listScheduleDrafts,
   updateScheduleDraft
 } from '../services/scheduleDraftService.js'
+import { rollbackScheduleItems } from '../services/scheduleRollbackService.js'
 import { emitSocketEvent } from '../socket/socketEvents.js'
 
 export const validateScheduleDraftController = async (req, res) => {
@@ -76,6 +77,7 @@ export const publishScheduleDraftsController = async (req, res) => {
         ids: data.map(item => Number(item.id)).filter(Boolean)
       })
     }
+
     return res.json({ success: true, data })
   } catch (error) {
     return res.status(409).json({
@@ -83,6 +85,25 @@ export const publishScheduleDraftsController = async (req, res) => {
       message:
         error.message ||
         'Unable to publish schedule drafts. No changes were committed.'
+    })
+  }
+}
+
+export const rollbackScheduleItemsController = async (req, res) => {
+  try {
+    const data = await rollbackScheduleItems(req.body?.items, req.user)
+    if (data.length) {
+      console.info('[SCHEDULE][ROLLED_BACK_TO_STAGING]', JSON.stringify(data))
+      emitSocketEvent('timetable:changed', {
+        action: 'rollback-to-staging',
+        ids: data.map(item => item.sourceId)
+      })
+    }
+    return res.json({ success: true, data })
+  } catch (error) {
+    return res.status(409).json({
+      success: false,
+      message: error.message || 'Unable to roll items back to staging.'
     })
   }
 }

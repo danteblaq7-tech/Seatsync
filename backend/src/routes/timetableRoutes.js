@@ -3,7 +3,10 @@ import {
   getTimetable,
   getAvailability
 } from '../controllers/timetableController.js'
-import { createScheduleOverrideController } from '../controllers/overrideController.js'
+import {
+  cancelScheduleOverrideController,
+  createScheduleOverrideController
+} from '../controllers/overrideController.js'
 import { requireRole } from '../middleware/authMiddleware.js'
 
 const router = express.Router()
@@ -22,6 +25,11 @@ router.post(
   '/overrides',
   requireRole('ADMIN', 'LECTURER'),
   createScheduleOverrideController
+)
+router.post(
+  '/overrides/:id/cancel',
+  requireRole('ADMIN', 'LECTURER'),
+  cancelScheduleOverrideController
 )
 
 export default router

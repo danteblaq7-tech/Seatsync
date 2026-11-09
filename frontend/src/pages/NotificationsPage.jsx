@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
+import { useAuth } from '../context/AuthContext'
 
 const toArray = value => {
   if (Array.isArray(value)) return value
@@ -10,19 +11,25 @@ const toArray = value => {
 
 export default function NotificationsPage () {
   const [search, setSearch] = useState('')
+  const queryClient = useQueryClient()
+  const { user } = useAuth()
   const {
     data = [],
     isLoading,
     error
   } = useQuery({
-    queryKey: ['notifications'],
+    queryKey: ['notifications', user?.id],
     queryFn: async () => {
       const response = await api.get('/api/notifications')
       return toArray(response)
-    }
+    },
+    enabled: Boolean(user?.id)
   })
 
-  const rows = data || []
+  const rows = useMemo(() => data || [], [data])
+  const unreadCount = rows.filter(
+    item => !(item.isRead ?? item.is_read ?? item.read)
+  ).length
 
   const filteredRows = useMemo(() => {
     return rows.filter(item => {
@@ -34,7 +41,9 @@ export default function NotificationsPage () {
   const markRead = async id => {
     try {
       await api.patch(`/api/notifications/${id}/read`, {})
-      window.location.reload()
+      await queryClient.invalidateQueries({
+        queryKey: ['notifications', user?.id]
+      })
     } catch (error) {
       console.error('Failed to mark notification read:', error)
     }
@@ -46,7 +55,11 @@ export default function NotificationsPage () {
         <div>
           <p className='eyebrow'>Communication</p>
           <h1>Notifications</h1>
+          <p className='muted'>Live updates from your academic workspace.</p>
         </div>
+        <span className='notification-unread-count'>
+          {unreadCount} unread
+        </span>
       </div>
 
       <section className='content-panel'>
@@ -66,32 +79,44 @@ export default function NotificationsPage () {
         ) : error ? (
           <p className='form-error'>Unable to load notifications.</p>
         ) : (
-          <ul className='notification-list'>
+          <ul className='notification-list' aria-live='polite'>
             {filteredRows.length ? (
-              filteredRows.map(item => (
-                <li key={item.id ?? item.title ?? item.message}>
-                  <div>
-                    <strong>{item.title || item.type || 'Notification'}</strong>
-                    <span>{item.message || 'No detail provided.'}</span>
-                  </div>
-                  <div className='toolbar-actions compact'>
-                    <span
-                      className={`status-badge ${item.read ? 'ok' : 'warn'}`}
-                    >
-                      {item.read ? 'Read' : 'New'}
-                    </span>
-                    {!item.read && (
-                      <button
-                        type='button'
-                        className='secondary-button'
-                        onClick={() => markRead(item.id)}
+              filteredRows.map(item => {
+                const isRead = Boolean(
+                  item.isRead ?? item.is_read ?? item.read
+                )
+                return (
+                  <li
+                    key={item.id ?? item.title ?? item.message}
+                    className={`notification-item ${
+                      isRead ? 'is-read' : 'is-new'
+                    }`}
+                  >
+                    <div className='notification-copy'>
+                      <strong>
+                        {item.title || item.type || 'Notification'}
+                      </strong>
+                      <span>{item.message || 'No detail provided.'}</span>
+                    </div>
+                    <div className='toolbar-actions compact'>
+                      <span
+                        className={`status-badge ${isRead ? 'ok' : 'warn'}`}
                       >
-                        Mark read
-                      </button>
-                    )}
-                  </div>
-                </li>
-              ))
+                        {isRead ? 'Read' : 'New'}
+                      </span>
+                      {!isRead && (
+                        <button
+                          type='button'
+                          className='secondary-button'
+                          onClick={() => markRead(item.id)}
+                        >
+                          Mark read
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                )
+              })
             ) : (
               <li>
                 <strong>No notifications</strong>

@@ -35,6 +35,29 @@ function ProtectedLayout () {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
   useEffect(() => {
+    const showFullCellTextOnHover = event => {
+      const cell = event.target.closest?.('td, th')
+      if (!cell) return
+
+      const text = cell.textContent?.trim()
+      if (!text || cell.title) return
+
+      const textElement = cell.querySelector('.table-cell-value')
+      const isClipped = textElement
+        ? textElement.scrollWidth > textElement.clientWidth ||
+          textElement.scrollHeight > textElement.clientHeight
+        : cell.scrollWidth > cell.clientWidth ||
+          cell.scrollHeight > cell.clientHeight
+
+      if (isClipped) cell.title = text
+    }
+
+    document.addEventListener('mouseover', showFullCellTextOnHover)
+    return () =>
+      document.removeEventListener('mouseover', showFullCellTextOnHover)
+  }, [])
+
+  useEffect(() => {
     const socket = io(SOCKET_BASE_URL, { transports: ['websocket'] })
     const refreshScheduleData = payload => {
       console.info('[REALTIME] timetable:changed received', payload)
@@ -55,7 +78,14 @@ function ProtectedLayout () {
       queryClient.invalidateQueries({ queryKey: ['academic-cohorts'] })
       queryClient.invalidateQueries({ queryKey: ['cohort-profile-requests'] })
       queryClient.invalidateQueries({ queryKey: ['cohort-membership-requests'] })
+      queryClient.invalidateQueries({ queryKey: ['cohort-request-counts'] })
       queryClient.invalidateQueries({ queryKey: ['students'] })
+    })
+    socket.on('notification:new', () => {
+      queryClient.invalidateQueries({ queryKey: ['notifications'] })
+    })
+    socket.on('notification:read', () => {
+      queryClient.invalidateQueries({ queryKey: ['notifications'] })
     })
     socket.on('audit:changed', () => {
       queryClient.invalidateQueries({ queryKey: ['audit-logs'] })
